@@ -1,0 +1,19 @@
+# Output files
+*.json
+*.xlsx
+ADO-Permissions-Audit/
+ADO-Audit-*/
+
+# PowerShell or Azure CLI temporary files
+*.log
+
+# Visual Studio
+.vs/
+*.user
+*.suo
+
+# macOS
+.DS_Store
+
+# Windows
+Thumbs.db
