@@ -5,7 +5,7 @@
 
 ## Files Reviewed
 
-1. testADO.ps1 (726 lines)
+1. ado_Information.ps1 (726 lines)
 2. README.md (267 lines after cleanup)
 3. implementation.md (298 lines)
 4. .gitignore (NEW)
@@ -39,13 +39,13 @@
    - ✅ `LICENSE` - MIT License for open source
 
 3. **No changes needed:**
-   - testADO.ps1 - Already secure
+   - ado_Information.ps1 - Already secure
    - implementation.md - Already generic
 
 ## Files Safe for Public Repository
 
 ```
-✅ testADO.ps1         # PowerShell script - no secrets
+✅ ado_Information.ps1 # PowerShell script - no secrets
 ✅ README.md           # Documentation - cleaned
 ✅ implementation.md   # Technical docs - generic
 ✅ .gitignore          # Git configuration

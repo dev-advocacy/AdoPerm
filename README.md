@@ -1,16 +1,16 @@
 # Azure DevOps Repository Permissions Audit
 
-This project provides a PowerShell script that audits Azure DevOps group permissions on Git repositories.
+This project provides a PowerShell script that audits Azure DevOps group and user permissions on Git repositories.
 
 Script file:
-- testADO.ps1
+- ado_Information.ps1
 
 The script can:
-- Enumerate organization groups.
+- Enumerate organization groups and optional users.
 - Read Git repository ACL entries per project and repository.
-- Capture explicit and inherited permissions.
+- Capture explicit, effective, and inherited permissions.
 - Export one JSON file per project.
-- Export one Excel workbook with one worksheet per project.
+- Export one Excel workbook with summary, matrix, legend, and one detail worksheet per project.
 
 ## Prerequisites
 
@@ -29,21 +29,46 @@ Minimum Azure DevOps access:
 
 Authentication options:
 - Interactive login with az login
-- Personal Access Token (PAT) passed to the script as plain text (`-Pat`) or secure string (`-PatSecureString`)
+- Personal Access Token (PAT) passed to the script as a SecureString (`-PatSecureString`)
 
 ## Files
 
-- testADO.ps1: Main audit script
+- ado_Information.ps1: Orchestrator script (parameters, constants, execution flow)
+- src/ado.logging.ps1: Logging, step timing, cancellation checks
+- src/ado.context.ps1: URL resolution, PAT conversion, output initialization
+- src/ado.client.ps1: Azure DevOps CLI calls, validation, project/subject/repo loading
+- src/ado.permissions.ps1: Permission decoding, state mapping, audit-row building
+- src/ado.export.ps1: JSON/XLSX exports, Summary, Matrix, detail sheets
+- src/ado.audit.ps1: Permission collection loop (sequential/parallel)
 - README.md: Usage documentation
+
+## Naming Convention Recommendation
+
+Use a stable `ado_` prefix for the entry script and lower-case domain files for helpers:
+
+- `ado_Information.ps1`
+- `ado.logging.ps1`
+- `ado.context.ps1`
+- `ado.client.ps1`
+- `ado.permissions.ps1`
+- `ado.export.ps1`
+- `ado.audit.ps1`
+
+
+This keeps the main script easy to discover while preserving domain-focused helper names.
+
+Benefits:
+
+- clear ownership by domain
+- predictable file discovery
+- easier onboarding and targeted refactoring
 
 ## Script Parameters
 
 - OrganizationUrl (required): Azure DevOps organization URL
   - Example: https://dev.azure.com/your-org
-- Pat (optional): Personal Access Token for Azure DevOps (plain text)
 - PatSecureString (optional): Personal Access Token for Azure DevOps as `SecureString`
-  - Recommended over `-Pat` when running from an interactive PowerShell session
-  - If both `-Pat` and `-PatSecureString` are provided, `-PatSecureString` is used
+  - Recommended when running from an interactive PowerShell session
 - ProjectName (optional): If provided, limits execution to one project
 - OutputFormat (optional): json, xlsx, or both (default: both)
 - DesktopFolderName (optional): Output root folder name created on Windows Desktop (default: ADO-Permissions-Audit)
@@ -59,35 +84,35 @@ Run for all projects, output JSON and XLSX (recommended secure method):
 
 ```powershell
 $securePat = Read-Host "Enter Azure DevOps PAT" -AsSecureString
-./testADO.ps1 -OrganizationUrl "https://dev.azure.com/your-org" -PatSecureString $securePat -OutputFormat both
+./ado_Information.ps1 -OrganizationUrl "https://dev.azure.com/your-org" -PatSecureString $securePat -OutputFormat both
 ```
 
 Run for one project only:
 
 ```powershell
 $securePat = Read-Host "Enter Azure DevOps PAT" -AsSecureString
-./testADO.ps1 -OrganizationUrl "https://dev.azure.com/your-org" -PatSecureString $securePat -ProjectName "MyProject" -OutputFormat both
+./ado_Information.ps1 -OrganizationUrl "https://dev.azure.com/your-org" -PatSecureString $securePat -ProjectName "MyProject" -OutputFormat both
 ```
 
 Run with interactive Azure CLI authentication (no PAT argument):
 
 ```powershell
 az login
-./testADO.ps1 -OrganizationUrl "https://dev.azure.com/your-org" -OutputFormat json
+./ado_Information.ps1 -OrganizationUrl "https://dev.azure.com/your-org" -OutputFormat json
 ```
 
 Run with PAT as SecureString (recommended):
 
 ```powershell
 $securePat = Read-Host "Enter Azure DevOps PAT" -AsSecureString
-./testADO.ps1 -OrganizationUrl "https://dev.azure.com/your-org" -PatSecureString $securePat -OutputFormat both
+./ado_Information.ps1 -OrganizationUrl "https://dev.azure.com/your-org" -PatSecureString $securePat -OutputFormat both
 ```
 
 Run with retry and parallel processing:
 
 ```powershell
 $securePat = Read-Host "Enter Azure DevOps PAT" -AsSecureString
-./testADO.ps1 -OrganizationUrl "https://dev.azure.com/your-org" -PatSecureString $securePat -OutputFormat both -EnableRetry -RetryMaxAttempts 3 -RetryBaseDelayMs 500 -EnableParallel -ParallelThrottleLimit 4
+./ado_Information.ps1 -OrganizationUrl "https://dev.azure.com/your-org" -PatSecureString $securePat -OutputFormat both -EnableRetry -RetryMaxAttempts 3 -RetryBaseDelayMs 500 -EnableParallel -ParallelThrottleLimit 4
 ```
 
 ## Command-Line Examples
@@ -96,28 +121,28 @@ Run with custom desktop output folder name:
 
 ```powershell
 $securePat = Read-Host "Enter Azure DevOps PAT" -AsSecureString
-./testADO.ps1 -OrganizationUrl "https://dev.azure.com/your-org" -PatSecureString $securePat -DesktopFolderName "ADO-Audit-Weekly"
+./ado_Information.ps1 -OrganizationUrl "https://dev.azure.com/your-org" -PatSecureString $securePat -DesktopFolderName "ADO-Audit-Weekly"
 ```
 
 Run only JSON export (faster):
 
 ```powershell
 $securePat = Read-Host "Enter Azure DevOps PAT" -AsSecureString
-./testADO.ps1 -OrganizationUrl "https://dev.azure.com/your-org" -PatSecureString $securePat -OutputFormat json
+./ado_Information.ps1 -OrganizationUrl "https://dev.azure.com/your-org" -PatSecureString $securePat -OutputFormat json
 ```
 
 Run only XLSX export:
 
 ```powershell
 $securePat = Read-Host "Enter Azure DevOps PAT" -AsSecureString
-./testADO.ps1 -OrganizationUrl "https://dev.azure.com/your-org" -PatSecureString $securePat -OutputFormat xlsx
+./ado_Information.ps1 -OrganizationUrl "https://dev.azure.com/your-org" -PatSecureString $securePat -OutputFormat xlsx
 ```
 
 Run for one specific project:
 
 ```powershell
 $securePat = Read-Host "Enter Azure DevOps PAT" -AsSecureString
-./testADO.ps1 -OrganizationUrl "https://dev.azure.com/your-org" -PatSecureString $securePat -ProjectName "Platform-Core" -OutputFormat both
+./ado_Information.ps1 -OrganizationUrl "https://dev.azure.com/your-org" -PatSecureString $securePat -ProjectName "Platform-Core" -OutputFormat both
 ```
 
 ## Output Structure
@@ -136,8 +161,11 @@ Generated files:
 - <ProjectName>.permissions.json
 
 2. Excel (single workbook)
-- ADO_Repo_Group_Permissions.xlsx
+- ADO_Repo_Permissions.xlsx
 - One worksheet per project
+- Summary worksheet with per-project totals
+- Matrix worksheet per project with repository-level coverage
+- Legend worksheet explaining permission states and colors
 - Worksheet name derived from project name (sanitized and truncated to Excel limits)
 
 ## Exported Data Fields
@@ -162,6 +190,16 @@ Typical fields include:
 - InheritedAllowPerms / InheritedDenyPerms
 - EffectiveAllowDisplay / EffectiveDenyDisplay (human-readable `Bits (Permissions)` format)
 - InheritedAllowDisplay / InheritedDenyDisplay (human-readable `Bits (Permissions)` format)
+
+## Workbook Columns
+
+The Excel workbook separates user-facing columns from technical columns:
+
+- Visible columns: project, repository, subject, origin, inheritance, and readable permission summaries.
+- Technical columns: raw bitmasks and internal state helpers used for filtering and troubleshooting.
+- State columns: one column per permission bit showing `Allow`, `Deny`, `NotSet`, or `NotSetInherited`.
+
+The `Summary` worksheet shows project-level totals. The `Matrix` worksheet shows repository coverage by subject. The detail worksheet contains the full per-repository audit rows.
 
 ## Notes on Inheritance
 
@@ -263,5 +301,5 @@ Important interpretation note:
 1. Open PowerShell
 2. Go to the project directory
 3. Authenticate (az login) or prepare PAT
-4. Run testADO.ps1
+4. Run ado_Information.ps1
 5. Open output files from Desktop folder

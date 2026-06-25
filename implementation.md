@@ -1,7 +1,7 @@
 # Implementation Details: Azure DevOps Repository Permissions Audit
 
 ## Overview
-This document explains the implementation of `testADO.ps1` in detail, including execution flow, data transformations, authentication strategy, and output generation.
+This document explains the implementation of `ado_Information.ps1` in detail, including execution flow, data transformations, authentication strategy, and output generation.
 
 The script audits Azure DevOps Git repository permissions for groups across one or more projects, then exports the results to JSON and/or Excel.
 
@@ -15,7 +15,6 @@ The script audits Azure DevOps Git repository permissions for groups across one 
 ## Runtime Entry Points
 The script is driven by these parameters:
 - `OrganizationUrl` (required): Azure DevOps organization URL.
-- `Pat` (optional): plain text PAT (backward compatibility).
 - `PatSecureString` (optional): secure PAT input (recommended).
 - `ProjectName` (optional): scope to a single project.
 - `OutputFormat` (optional): `json`, `xlsx`, or `both`.
@@ -26,7 +25,7 @@ The script is driven by these parameters:
 flowchart TD
     A[Start Script] --> B[Validate/Install azure-devops CLI extension]
     B --> C[Resolve Organization URL and optional ProjectName]
-    C --> D[Resolve PAT from PatSecureString or Pat]
+    C --> D[Resolve PAT from PatSecureString]
     D --> E[Validate Azure DevOps access]
     E --> F[Create output folder on Desktop]
     F --> G[Load organization groups]
@@ -62,9 +61,8 @@ Example:
 - Derived project name: `My Project`
 
 ### PAT handling
-The script supports two inputs:
+The script supports one PAT input:
 - `-PatSecureString` (preferred)
-- `-Pat` (legacy/backward compatibility)
 
 Implementation details:
 - `ConvertFrom-SecureStringToPlainText` uses `SecureStringToBSTR` and `ZeroFreeBSTR` to safely convert for CLI usage.
@@ -78,12 +76,12 @@ sequenceDiagram
     participant AZCLI as Azure CLI + Azure DevOps Ext
     participant ADO as Azure DevOps REST APIs
 
-    User->>Script: Run testADO.ps1 with OrganizationUrl and optional PAT
+    User->>Script: Run ado_Information.ps1 with OrganizationUrl and optional PAT
     Script->>Script: Resolve context (org URL/project)
     alt PatSecureString provided
         Script->>Script: Convert SecureString to plain text (in memory)
         Script->>Script: Set AZURE_DEVOPS_EXT_PAT
-    else Pat provided
+    else PatSecureString provided
         Script->>Script: Set AZURE_DEVOPS_EXT_PAT
     else No PAT provided
         Script->>AZCLI: Reuse az login context
@@ -242,33 +240,9 @@ Tradeoffs:
 Complexity is roughly proportional to:
 - `#projects * #repositories per project * #groups`
 
-## Runtime Monitoring with dotnet-counters
-
-When profiling execution behavior, monitor the process with:
-
-```powershell
-dotnet-counters monitor --counters System.Runtime[dotnet.process.cpu.usage,dotnet.process.cpu.count,dotnet.thread_pool.thread.count,dotnet.thread_pool.queue.length,dotnet.thread_pool.work_item.count] -p <PID>
-```
-
-Metric semantics:
-
-- `dotnet.process.cpu.usage`: actual CPU consumption by the process (percentage).
-- `dotnet.process.cpu.count`: logical CPU capacity available to the process.
-- `dotnet.thread_pool.thread.count`: current worker-thread count.
-- `dotnet.thread_pool.queue.length`: current number of queued thread-pool work items.
-- `dotnet.thread_pool.work_item.count`: cumulative number of processed work items since start.
-
-Interpretation caveat:
-
-- Seeing `queue.length = 0` while `work_item.count` is high is normal. It means there is no current backlog, and many work items have already been processed.
-
-Why CPU may stay relatively low in this script:
-
-- Permission collection is mostly I/O-bound (Azure CLI + network API calls).
-- Parallelism improves latency overlap but does not necessarily saturate CPU cores.
 
 ## Security Notes
-- Prefer `-PatSecureString` instead of `-Pat` in interactive sessions.
+- Prefer `-PatSecureString` in interactive sessions.
 - Avoid hardcoding PATs in scripts, command history, or source control.
 - Rotate PATs regularly.
 - Limit PAT scopes to minimum required permissions.
@@ -277,12 +251,12 @@ Why CPU may stay relatively low in this script:
 ### Recommended (secure input)
 ```powershell
 $securePat = Read-Host "Enter Azure DevOps PAT" -AsSecureString
-./testADO.ps1 -OrganizationUrl "https://dev.azure.com/your-org" -PatSecureString $securePat -OutputFormat both
+./ado_Information.ps1 -OrganizationUrl "https://dev.azure.com/your-org" -PatSecureString $securePat -OutputFormat both
 ```
 
 ### Single project scope
 ```powershell
-./testADO.ps1 -OrganizationUrl "https://dev.azure.com/your-org" -PatSecureString $securePat -ProjectName "MyProject" -OutputFormat json
+./ado_Information.ps1 -OrganizationUrl "https://dev.azure.com/your-org" -PatSecureString $securePat -ProjectName "MyProject" -OutputFormat json
 ```
 
 ## Validation Checklist
