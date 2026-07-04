@@ -9,12 +9,15 @@ function Resolve-AdoContext {
 
     $orgUrl = $InputOrganizationUrl.Trim().TrimEnd('/')
     $derivedProjectName = $InputProjectName
+    $platformType = 'Server'
 
     try {
         $uri = [System.Uri]$orgUrl
         $segments = @(($uri.AbsolutePath.Trim('/') -split '/') | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
 
         if ($uri.Host -match '(^|\.)dev\.azure\.com$') {
+            # Azure DevOps Services — modern URL: https://dev.azure.com/{org}
+            $platformType = 'Cloud'
             if ($segments.Count -ge 1) {
                 $orgUrl = '{0}://{1}/{2}' -f $uri.Scheme, $uri.Host, $segments[0]
             }
@@ -22,6 +25,20 @@ function Resolve-AdoContext {
             if ([string]::IsNullOrWhiteSpace($derivedProjectName) -and $segments.Count -ge 2) {
                 $derivedProjectName = [System.Uri]::UnescapeDataString($segments[1])
             }
+        }
+        elseif ($uri.Host -match '\.visualstudio\.com$') {
+            # Azure DevOps Services — legacy URL: https://{org}.visualstudio.com
+            $platformType = 'Cloud'
+            # Keep URL as-is; az devops CLI accepts this format directly.
+            if ([string]::IsNullOrWhiteSpace($derivedProjectName) -and $segments.Count -ge 1) {
+                $derivedProjectName = [System.Uri]::UnescapeDataString($segments[0])
+            }
+        }
+        else {
+            # Azure DevOps Server (on-premises): https://{server}/{collection}
+            # or https://{server}/tfs/{collection}
+            # The collection URL is passed as-is to az devops CLI.
+            $platformType = 'Server'
         }
     }
     catch {
@@ -31,6 +48,7 @@ function Resolve-AdoContext {
     return [PSCustomObject]@{
         OrganizationUrl = $orgUrl
         ProjectName     = $derivedProjectName
+        PlatformType    = $platformType
     }
 }
 

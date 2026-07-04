@@ -127,7 +127,7 @@ function Get-Subjects {
     }
     catch {
         Write-Log -Level 'Warn' -Message ('Primary group listing failed, fallback to Graph API: {0}' -f $_.Exception.Message)
-        $groupsResponse = Invoke-AdoCliJson -Command ('az devops invoke --organization "{0}" --area Graph --resource Groups --api-version 7.1-preview.1 --output json' -f $OrgUrl)
+        $groupsResponse = Invoke-AdoCliJson -Command ('az devops invoke --organization "{0}" --area Graph --resource Groups --api-version {1} --output json' -f $OrgUrl, $Script:AdoGraphApiVersion)
     }
 
     $groups = @()
@@ -150,7 +150,7 @@ function Get-Subjects {
 
     if ($LoadUsers) {
         Start-Step -Name 'Load users'
-        $usersResponse = Invoke-AdoCliJson -Command ('az devops invoke --organization "{0}" --area Graph --resource Users --api-version 7.1-preview.1 --output json' -f $OrgUrl)
+        $usersResponse = Invoke-AdoCliJson -Command ('az devops invoke --organization "{0}" --area Graph --resource Users --api-version {1} --output json' -f $OrgUrl, $Script:AdoGraphApiVersion)
         $users = @()
         if ($usersResponse.value) {
             $users = @($usersResponse.value)
@@ -180,4 +180,96 @@ function Get-Repositories {
     )
 
     return @(Invoke-AdoCliJson -Command ('az repos list --organization "{0}" --project "{1}" --output json' -f $OrgUrl, $Project.name))
+}
+
+function Get-BuildPermissionNames {
+    param([long]$Bits)
+
+    $buildBits = [ordered]@{
+        1     = 'ViewBuilds';               2    = 'EditBuildQuality'
+        4     = 'RetainIndefinitely';        8    = 'DeleteBuilds'
+        16    = 'ManageBuildQualities';      32   = 'DestroyBuilds'
+        64    = 'UpdateBuildInformation';    128  = 'QueueBuilds'
+        256   = 'ManageBuildQueue';          512  = 'StopBuilds'
+        1024  = 'ViewBuildDefinition';       2048 = 'EditBuildDefinition'
+        4096  = 'DeleteBuildDefinition';     8192 = 'OverrideBuildCheckInValidation'
+        16384 = 'AdministerBuildPermissions'
+    }
+
+    $names = @(foreach ($bit in $buildBits.Keys) {
+        if (($Bits -band [long]$bit) -ne 0) { $buildBits[$bit] }
+    })
+    if ($names.Count -eq 0) { return '' }
+    return $names -join ';'
+}
+
+function Get-BuildPermissions {
+    <#
+    .SYNOPSIS
+    Collects project-level build (pipeline) permissions for every subject using the
+    Azure DevOps Build security namespace (33344d9c-fc72-4d6f-aba5-fa317101a7e8).
+    The token is the project GUID, which covers the project-wide build scope.
+    #>
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$OrgUrl,
+
+        [Parameter(Mandatory = $true)]
+        [object[]]$Projects,
+
+        [Parameter(Mandatory = $true)]
+        [object[]]$Subjects
+    )
+
+    $buildNamespaceId = '33344d9c-fc72-4d6f-aba5-fa317101a7e8'
+    $rows = New-Object System.Collections.Generic.List[object]
+
+    foreach ($project in $Projects) {
+        Assert-NotCancelled
+        $token = [string]$project.id   # project-level build token
+
+        foreach ($subject in $Subjects) {
+            Assert-NotCancelled
+            if ([string]::IsNullOrWhiteSpace($subject.Descriptor)) { continue }
+
+            $response = $null
+            try {
+                $response = Invoke-AdoCliJson -Command (
+                    'az devops security permission show --organization "{0}" --id {1} --subject "{2}" --token "{3}" --output json' -f
+                    $OrgUrl, $buildNamespaceId, $subject.Descriptor, $token
+                )
+            }
+            catch {
+                Write-Log -Level 'Debug' -Message ('Build permission query skipped for [{0}/{1}]: {2}' -f $project.name, $subject.DisplayName, $_.Exception.Message)
+                continue
+            }
+
+            $acl = @($response) | Select-Object -First 1
+            if (-not $acl -or -not $acl.acesDictionary) { continue }
+
+            $ace = @($acl.acesDictionary.PSObject.Properties.Value) | Select-Object -First 1
+            if (-not $ace) { continue }
+
+            # Skip rows where nothing is set
+            if ($ace.allow -eq 0 -and $ace.deny -eq 0) { continue }
+
+            [void]$rows.Add([PSCustomObject]@{
+                ProjectName          = [string]$project.name
+                ProjectId            = [string]$project.id
+                Token                = $token
+                SubjectType          = [string]$subject.SubjectType
+                SubjectDisplayName   = [string]$subject.DisplayName
+                SubjectPrincipalName = [string]$subject.PrincipalName
+                SubjectDescriptor    = [string]$subject.Descriptor
+                SubjectOrigin        = [string]$subject.Origin
+                InheritanceEnabled   = [bool]$acl.inheritPermissions
+                AllowBits            = [long]$ace.allow
+                DenyBits             = [long]$ace.deny
+                AllowPermissions     = (Get-BuildPermissionNames -Bits ([long]$ace.allow))
+                DenyPermissions      = (Get-BuildPermissionNames -Bits ([long]$ace.deny))
+            })
+        }
+    }
+
+    return $rows
 }

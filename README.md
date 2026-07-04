@@ -1,6 +1,7 @@
 # Azure DevOps Repository Permissions Audit
 
 This project provides a PowerShell script that audits Azure DevOps group and user permissions on Git repositories.
+It supports both **Azure DevOps Services** (cloud) and **Azure DevOps Server** (on-premises, 2019+).
 
 Script file:
 - ado_Information.ps1
@@ -9,8 +10,61 @@ The script can:
 - Enumerate organization groups and optional users.
 - Read Git repository ACL entries per project and repository.
 - Capture explicit, effective, and inherited permissions.
-- Export one JSON file per project.
-- Export one Excel workbook with summary, matrix, legend, and one detail worksheet per project.
+- Resolve group membership (members of every group) with `-Membership`.
+- Enumerate branch policies per project with `-Policies`.
+- Flag high-risk permission assignments (always included in output).
+- Export one JSON file per project, plus subjects, risk flags, membership, and policies JSON.
+- Export one Excel workbook with Summary, Subjects, RiskFlags, optional GroupMembership and BranchPolicies, per-project detail, and Legend sheets.
+
+```mermaid
+flowchart LR
+    subgraph Input
+        OrgURL([Organization URL])
+        PAT([PAT / az login])
+    end
+    subgraph ADO["Azure DevOps (Cloud or Server)"]
+        Proj[(Projects)]
+        Repos[(Repositories)]
+        ACL[(Permission ACLs)]
+        Graph[(Groups / Users)]
+        Policies[(Branch Policies)]
+    end
+    subgraph Script[ado_Information.ps1]
+        Ctx[Resolve context\n& detect platform]
+        Load[Load groups\n& users]
+        Audit[Evaluate permissions\nper repo x subject]
+        Risk[Flag high-risk\npermissions]
+        Mem[Resolve group\nmembership\n-Membership]
+        Pol[Collect branch\npolicies\n-Policies]
+    end
+    subgraph Output
+        JSON[(JSON files)]
+        XLSX[(Excel workbook)]
+    end
+
+    OrgURL --> Ctx
+    PAT --> Ctx
+    Ctx --> Graph --> Load
+    Ctx --> Proj --> Repos --> Audit
+    Load --> Audit
+    ACL --> Audit
+    Audit --> Risk --> JSON & XLSX
+    Graph -.->|optional| Mem --> JSON & XLSX
+    Policies -.->|optional| Pol --> JSON & XLSX
+```
+
+## Platform Support
+
+The platform type is detected automatically from the `OrganizationUrl` parameter:
+
+| URL format | Platform |
+|---|---|
+| `https://dev.azure.com/{org}` | Azure DevOps Services (cloud, modern) |
+| `https://{org}.visualstudio.com` | Azure DevOps Services (cloud, legacy) |
+| `https://{server}/{collection}` | Azure DevOps Server (on-premises) |
+| `https://{server}/tfs/{collection}` | Azure DevOps Server (on-premises) |
+
+The detected platform is logged at startup and determines the Graph API version used internally (`7.1-preview.1` for cloud, `5.1-preview.1` for server).
 
 ## Prerequisites
 
@@ -28,19 +82,28 @@ Minimum Azure DevOps access:
 - Graph/group read access
 
 Authentication options:
-- Interactive login with az login
+- Interactive login with `az login` (Azure DevOps Services only)
 - Personal Access Token (PAT) passed to the script as a SecureString (`-PatSecureString`)
+- **A PAT is required for Azure DevOps Server (on-premises)** when `az login` is not applicable
 
 ## Files
 
 - ado_Information.ps1: Orchestrator script (parameters, constants, execution flow)
+- ado_Migration.ps1: Migration comparison script (snapshot source + destination, diff report)
 - src/ado.logging.ps1: Logging, step timing, cancellation checks
-- src/ado.context.ps1: URL resolution, PAT conversion, output initialization
+- src/ado.context.ps1: URL resolution, platform detection, PAT conversion, output initialization
 - src/ado.client.ps1: Azure DevOps CLI calls, validation, project/subject/repo loading
 - src/ado.permissions.ps1: Permission decoding, state mapping, audit-row building
-- src/ado.export.ps1: JSON/XLSX exports, Summary, Matrix, detail sheets
+- src/ado.export.ps1: JSON/XLSX exports — all sheets and JSON files
 - src/ado.audit.ps1: Permission collection loop (sequential/parallel)
+- src/ado.membership.ps1: Group membership resolution (`-IncludeGroupMembership`)
+- src/ado.policies.ps1: Branch policy collection and high-risk permission flagging (`-IncludeBranchPolicies`)
+- src/ado.snapshot.ps1: Snapshot build / save / load (used by ado_Migration.ps1)
+- src/ado.compare.ps1: Snapshot comparison and diff export (used by ado_Migration.ps1)
 - README.md: Usage documentation
+- doc/MIGRATION.md: Migration comparison documentation
+- doc/implementation.md: Internal implementation details
+- doc/SECURITY_AUDIT.md: Security audit results
 
 ## Naming Convention Recommendation
 
@@ -65,8 +128,11 @@ Benefits:
 
 ## Script Parameters
 
-- OrganizationUrl (required): Azure DevOps organization URL
-  - Example: https://dev.azure.com/your-org
+- OrganizationUrl (required): Azure DevOps organization or collection URL
+  - Cloud (modern)  : `https://dev.azure.com/your-org`
+  - Cloud (legacy)  : `https://your-org.visualstudio.com`
+  - Server on-prem  : `https://myserver/tfs/DefaultCollection`
+  - Server on-prem  : `https://myserver/MyCollection`
 - PatSecureString (optional): Personal Access Token for Azure DevOps as `SecureString`
   - Recommended when running from an interactive PowerShell session
 - ProjectName (optional): If provided, limits execution to one project
@@ -75,16 +141,41 @@ Benefits:
 - EnableRetry (optional): Enables retry with exponential backoff for transient Azure CLI/API failures
 - RetryMaxAttempts (optional): Max attempts when retry is enabled (default: 3)
 - RetryBaseDelayMs (optional): Base delay in milliseconds for exponential backoff (default: 500)
+- IncludeUsers (alias: `-Users`): Includes user subjects in addition to groups
+- IncludeGroupMembership (alias: `-Membership`): Resolves members of every group; adds GroupMembership sheet and `group.membership.json`
+- IncludeBranchPolicies (alias: `-Policies`): Collects branch policies per project; adds BranchPolicies sheet and `branch.policies.json`
 - EnableParallel (optional): Enables parallel repository processing (PowerShell 7+)
 - ParallelThrottleLimit (optional): Max parallel workers when parallel mode is enabled (default: 4)
 
 ## Basic Usage
 
-Run for all projects, output JSON and XLSX (recommended secure method):
+Minimal run — repo permissions only (cloud):
 
 ```powershell
 $securePat = Read-Host "Enter Azure DevOps PAT" -AsSecureString
 ./ado_Information.ps1 -OrganizationUrl "https://dev.azure.com/your-org" -PatSecureString $securePat -OutputFormat both
+```
+
+Full audit — membership + branch policies + users (cloud):
+
+```powershell
+$securePat = Read-Host "Enter Azure DevOps PAT" -AsSecureString
+./ado_Information.ps1 -OrganizationUrl "https://dev.azure.com/your-org" -PatSecureString $securePat `
+    -Users -Membership -Policies -OutputFormat both
+```
+
+Run for all projects — Azure DevOps Services, legacy URL:
+
+```powershell
+$securePat = Read-Host "Enter Azure DevOps PAT" -AsSecureString
+./ado_Information.ps1 -OrganizationUrl "https://your-org.visualstudio.com" -PatSecureString $securePat -OutputFormat both
+```
+
+Run for all projects — Azure DevOps Server (on-premises):
+
+```powershell
+$securePat = Read-Host "Enter Azure DevOps PAT" -AsSecureString
+./ado_Information.ps1 -OrganizationUrl "https://myserver/tfs/DefaultCollection" -PatSecureString $securePat -OutputFormat both
 ```
 
 Run for one project only:
@@ -101,18 +192,12 @@ az login
 ./ado_Information.ps1 -OrganizationUrl "https://dev.azure.com/your-org" -OutputFormat json
 ```
 
-Run with PAT as SecureString (recommended):
-
-```powershell
-$securePat = Read-Host "Enter Azure DevOps PAT" -AsSecureString
-./ado_Information.ps1 -OrganizationUrl "https://dev.azure.com/your-org" -PatSecureString $securePat -OutputFormat both
-```
-
 Run with retry and parallel processing:
 
 ```powershell
 $securePat = Read-Host "Enter Azure DevOps PAT" -AsSecureString
-./ado_Information.ps1 -OrganizationUrl "https://dev.azure.com/your-org" -PatSecureString $securePat -OutputFormat both -EnableRetry -RetryMaxAttempts 3 -RetryBaseDelayMs 500 -EnableParallel -ParallelThrottleLimit 4
+./ado_Information.ps1 -OrganizationUrl "https://dev.azure.com/your-org" -PatSecureString $securePat `
+    -OutputFormat both -EnableRetry -RetryMaxAttempts 3 -RetryBaseDelayMs 500 -EnableParallel -ParallelThrottleLimit 4
 ```
 
 ## Command-Line Examples
@@ -149,57 +234,115 @@ $securePat = Read-Host "Enter Azure DevOps PAT" -AsSecureString
 
 The script creates this folder:
 
-- Desktop/<DesktopFolderName>/<timestamp>
+- `Desktop/<DesktopFolderName>/<timestamp>`
 
-Example:
+Example: `Desktop/ADO-Permissions-Audit/20260617_153000`
 
-- Desktop/ADO-Permissions-Audit/20260617_153000
+```mermaid
+flowchart TD
+    Root["ADO-Permissions-Audit/20260617_153000"]
+    Root --> Log[audit.log]
+    Root --> Stop[STOP - create to cancel]
+    Root --> Subj[subjects.permissions.json]
+    Root --> Risk[risk.flags.json]
+    Root --> P1["Project1.permissions.json"]
+    Root --> P2["Project2.permissions.json"]
+    Root --> Mem["group.membership.json\n(-Membership only)"]
+    Root --> Pol["branch.policies.json\n(-Policies only)"]
+    Root --> XLSX[ADO_Repo_Permissions.xlsx]
+    XLSX --> S1[Summary]
+    XLSX --> S2[Subjects]
+    XLSX --> S3[RiskFlags]
+    XLSX --> S4["Matrix_Project1"]
+    XLSX --> S5["Matrix_Project2"]
+    XLSX --> S6["Project1 - detail"]
+    XLSX --> S7["Project2 - detail"]
+    XLSX --> S8["GroupMembership\n(-Membership only)"]
+    XLSX --> S9["BranchPolicies\n(-Policies only)"]
+    XLSX --> S10[Legend]
+```
 
-Generated files:
+**JSON files**
+- `subjects.permissions.json` — all groups/users with aggregated effective permissions across all repos
+- `risk.flags.json` — all subjects that hold at least one high-risk permission bit
+- `<ProjectName>.permissions.json` — full per-repository permission rows for each project
+- `group.membership.json` — group membership rows _(only when `-Membership` is used)_
+- `branch.policies.json` — branch policy rows _(only when `-Policies` is used)_
 
-1. JSON (one file per project)
-- <ProjectName>.permissions.json
-
-2. Excel (single workbook)
-- ADO_Repo_Permissions.xlsx
-- One worksheet per project
-- Summary worksheet with per-project totals
-- Matrix worksheet per project with repository-level coverage
-- Legend worksheet explaining permission states and colors
-- Worksheet name derived from project name (sanitized and truncated to Excel limits)
+**Excel workbook** (`ADO_Repo_Permissions.xlsx`)
+- **Summary** — one row per project with totals (repos, subjects, allow/deny counts)
+- **Subjects** — one row per group/user with combined effective permissions across all repos
+- **RiskFlags** — subjects with high-risk bits: `Administer`, `ManagePermissions`, `BypassPoliciesWhenCompletingPR`, `PolicyExempt`, `ForcePush`, `DeleteOrDisableRepository`
+- **Matrix_\<Project\>** — one row per repository with subject assignment coverage
+- **\<Project\>** — full detail rows (one per repo × subject)
+- **GroupMembership** — members of every group _(only when `-Membership` is used)_
+- **BranchPolicies** — branch policies per project/repo _(only when `-Policies` is used)_
+- **Legend** — color-coding reference for permission states
 
 ## Exported Data Fields
 
-Typical fields include:
+### Per-project permission rows (`<ProjectName>.permissions.json` / detail sheets)
 
-- Organization
-- ProjectName
-- ProjectId
-- RepositoryName
-- RepositoryId
-- GroupDisplayName
-- GroupPrincipalName
-- GroupDescriptor
-- GroupOrigin
-- InheritanceEnabled
-- AllowBits / DenyBits
-- AllowPermissions / DenyPermissions
-- EffectiveAllowBits / EffectiveDenyBits
-- EffectiveAllowPerms / EffectiveDenyPerms
-- InheritedAllowBits / InheritedDenyBits
-- InheritedAllowPerms / InheritedDenyPerms
-- EffectiveAllowDisplay / EffectiveDenyDisplay (human-readable `Bits (Permissions)` format)
-- InheritedAllowDisplay / InheritedDenyDisplay (human-readable `Bits (Permissions)` format)
+| Field | Description |
+|---|---|
+| `Organization` | Organization URL |
+| `ProjectName` / `ProjectId` | Project identity |
+| `RepositoryName` / `RepositoryId` | Repository identity |
+| `SubjectType` | `Group` or `User` |
+| `SubjectDisplayName` / `SubjectPrincipalName` | Subject identity |
+| `SubjectDescriptor` / `SubjectOrigin` | Technical subject identifiers |
+| `InheritanceEnabled` | Whether ACL inheritance is active |
+| `AllowBits` / `DenyBits` | Explicit permission bitmasks |
+| `AllowPermissions` / `DenyPermissions` | Decoded explicit permission names |
+| `EffectiveAllowBits` / `EffectiveDenyBits` | Final effective bitmasks |
+| `EffectiveAllowDisplay` / `EffectiveDenyDisplay` | Human-readable effective permissions |
+| `InheritedAllowBits` / `InheritedDenyBits` | Inherited bitmasks |
+| `InheritedAllowDisplay` / `InheritedDenyDisplay` | Human-readable inherited permissions |
+| `State_<PermissionName>` | Per-bit state: `Allow`, `Deny`, `NotSet`, `NotSetInherited` |
+
+### Subjects summary (`subjects.permissions.json` / Subjects sheet)
+
+| Field | Description |
+|---|---|
+| `SubjectType` | `Group` or `User` |
+| `SubjectDisplayName` / `SubjectPrincipalName` | Subject identity |
+| `SubjectOrigin` | Identity origin (AAD, ADFS, etc.) |
+| `ProjectCount` | Number of distinct projects the subject appears in |
+| `RepositoryCount` | Number of distinct repos where permissions are set |
+| `AllowAssignments` | Count of repos with explicit Allow bits |
+| `DenyAssignments` | Count of repos with explicit Deny bits |
+| `CombinedEffectiveAllowDisplay` | Union of all effective Allow permissions across all repos |
+| `CombinedEffectiveDenyDisplay` | Union of all effective Deny permissions across all repos |
 
 ## Workbook Columns
 
-The Excel workbook separates user-facing columns from technical columns:
+```mermaid
+flowchart LR
+    WB[ADO_Repo_Permissions.xlsx]
+    WB --> SUM["Summary\nOrg / Project / counts"]
+    WB --> SUB["Subjects\nper group-user\ncombined effective rights"]
+    WB --> RISK["RiskFlags\nCritical / High / Medium\nhigh-risk permissions"]
+    WB --> MAT["Matrix_Project\nper repo\nsubject coverage"]
+    WB --> DET["Project detail\nvisible + state + technical cols"]
+    WB --> MEM["GroupMembership\n(-Membership)\ngroup to member map"]
+    WB --> POL["BranchPolicies\n(-Policies)\npolicy type / branch / settings"]
+    WB --> LEG["Legend\nAllow / Deny / NotSet colors"]
+```
 
-- Visible columns: project, repository, subject, origin, inheritance, and readable permission summaries.
-- Technical columns: raw bitmasks and internal state helpers used for filtering and troubleshooting.
-- State columns: one column per permission bit showing `Allow`, `Deny`, `NotSet`, or `NotSetInherited`.
+Column categories in detail sheets:
+- **Visible columns** — project, repository, subject, origin, inheritance, readable permission summaries
+- **State columns** — one column per permission bit: `Allow`, `Deny`, `NotSet`, or `NotSetInherited` (color-coded, hidden by default)
+- **Technical columns** — raw bitmasks and descriptors (hidden by default)
 
-The `Summary` worksheet shows project-level totals. The `Matrix` worksheet shows repository coverage by subject. The detail worksheet contains the full per-repository audit rows.
+**RiskFlags sheet** classifies subjects by severity:
+
+| RiskLevel | Permissions triggering it |
+|---|---|
+| Critical | `Administer`, `ManagePermissions` |
+| High | `BypassPoliciesWhenCompletingPR`, `PolicyExempt` |
+| Medium | `ForcePush`, `DeleteOrDisableRepository` |
+
+**Subjects sheet** (`CombinedEffective*`) shows the union of all effective permission bits across every repository — useful for quickly identifying overprivileged identities.
 
 ## Notes on Inheritance
 
@@ -300,6 +443,26 @@ Important interpretation note:
 
 1. Open PowerShell
 2. Go to the project directory
-3. Authenticate (az login) or prepare PAT
-4. Run ado_Information.ps1
+3. Authenticate (`az login`) or prepare PAT
+4. Run `ado_Information.ps1`
 5. Open output files from Desktop folder
+
+---
+
+## Migration Comparison
+
+Use `ado_Migration.ps1` to validate that a migration succeeded. It takes a snapshot of the source organization, a snapshot of the destination, and produces a diff report.
+
+```powershell
+$srcPat = Read-Host "Source PAT" -AsSecureString
+$dstPat = Read-Host "Destination PAT" -AsSecureString
+
+./ado_Migration.ps1 -Mode Full `
+    -SrcOrg "https://myserver/tfs/DefaultCollection" -SrcPat $srcPat `
+    -DstOrg "https://dev.azure.com/my-new-org"       -DstPat $dstPat `
+    -Membership -Policies -Out both
+```
+
+Supported scenarios: cloud-to-cloud, on-prem-to-cloud, cloud-to-on-prem, on-prem-to-on-prem.
+
+See [MIGRATION.md](doc/MIGRATION.md) for full documentation.

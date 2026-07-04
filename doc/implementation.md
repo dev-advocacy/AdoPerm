@@ -46,19 +46,39 @@ flowchart TD
 ```
 
 ## Authentication and Context Resolution
-### Organization URL normalization
-`Resolve-AdoContext` normalizes `OrganizationUrl` and derives `ProjectName` when possible.
+### Platform detection and Organization URL normalization
+`Resolve-AdoContext` normalizes `OrganizationUrl`, detects the target platform, and derives `ProjectName` when possible.
 
-Behavior:
+Platform detection rules:
+
+| Host pattern | Platform | Notes |
+|---|---|---|
+| `dev.azure.com` | `Cloud` | Modern Azure DevOps Services URL |
+| `*.visualstudio.com` | `Cloud` | Legacy Azure DevOps Services URL |
+| Anything else | `Server` | Azure DevOps Server (on-premises) |
+
+The detected platform is stored in `$Script:AdoPlatform` and returned as `PlatformType` in the context object.
+
+URL normalization behavior:
 - Trims whitespace and trailing slash.
 - Parses URL with `System.Uri`.
-- For `dev.azure.com`, extracts the first path segment as organization.
-- If no explicit `ProjectName` parameter was given and a second path segment exists, it uses that segment as project name.
+- For `dev.azure.com`, extracts the first path segment as the organization name and rebuilds a canonical URL.
+- For `*.visualstudio.com`, the URL is used as-is; `az devops` CLI accepts this format directly.
+- For Azure DevOps Server, the full collection URL is passed as-is to the CLI (e.g., `https://myserver/tfs/DefaultCollection`).
+- If no explicit `ProjectName` was given and a second path segment exists (cloud) or first segment (legacy), it is used as the project name.
 
-Example:
-- Input URL: `https://dev.azure.com/contoso/My%20Project`
-- Resolved organization URL: `https://dev.azure.com/contoso`
-- Derived project name: `My Project`
+Examples:
+
+| Input URL | Resolved org URL | Derived project | Platform |
+|---|---|---|---|
+| `https://dev.azure.com/contoso/My%20Project` | `https://dev.azure.com/contoso` | `My Project` | Cloud |
+| `https://contoso.visualstudio.com/MyProject` | `https://contoso.visualstudio.com` | `MyProject` | Cloud |
+| `https://myserver/tfs/DefaultCollection` | `https://myserver/tfs/DefaultCollection` | _(none)_ | Server |
+
+### Graph API version selection
+The Graph API version is chosen automatically based on the detected platform and stored in `$Script:AdoGraphApiVersion`:
+- `Cloud` → `7.1-preview.1`
+- `Server` → `5.1-preview.1` (compatible with Azure DevOps Server 2019+)
 
 ### PAT handling
 The script supports one PAT input:
@@ -77,14 +97,13 @@ sequenceDiagram
     participant ADO as Azure DevOps REST APIs
 
     User->>Script: Run ado_Information.ps1 with OrganizationUrl and optional PAT
-    Script->>Script: Resolve context (org URL/project)
+    Script->>Script: Resolve context (org URL/project/platform)
+    Note over Script: Platform auto-detected from URL host
     alt PatSecureString provided
         Script->>Script: Convert SecureString to plain text (in memory)
         Script->>Script: Set AZURE_DEVOPS_EXT_PAT
-    else PatSecureString provided
-        Script->>Script: Set AZURE_DEVOPS_EXT_PAT
     else No PAT provided
-        Script->>AZCLI: Reuse az login context
+        Script->>AZCLI: Reuse az login context (cloud only)
     end
     Script->>AZCLI: az devops project list --top 1
     AZCLI->>ADO: Query projects endpoint
@@ -95,11 +114,12 @@ sequenceDiagram
 ## Group Discovery Strategy
 The script attempts group discovery in two stages:
 1. Primary: `az devops security group list --scope organization`
-2. Fallback: `az devops invoke --area Graph --resource Groups`
+2. Fallback: `az devops invoke --area Graph --resource Groups --api-version <detected-version>`
 
 Why this strategy:
 - Native command is more stable for most tenants.
-- Fallback keeps compatibility when the primary command fails in specific environments.
+- Fallback keeps compatibility when the primary command fails in specific environments (including some Azure DevOps Server configurations).
+- The API version is dynamically chosen based on the detected platform (`7.1-preview.1` for cloud, `5.1-preview.1` for server).
 
 Discovered groups are indexed by descriptor in a hashtable for fast lookups:
 - `DisplayName`
@@ -248,15 +268,22 @@ Complexity is roughly proportional to:
 - Limit PAT scopes to minimum required permissions.
 
 ## Suggested Command Patterns
-### Recommended (secure input)
+### Recommended (secure input) — Azure DevOps Services
 ```powershell
 $securePat = Read-Host "Enter Azure DevOps PAT" -AsSecureString
 ./ado_Information.ps1 -OrganizationUrl "https://dev.azure.com/your-org" -PatSecureString $securePat -OutputFormat both
 ```
 
-### Single project scope
+### Azure DevOps Services — legacy URL
 ```powershell
-./ado_Information.ps1 -OrganizationUrl "https://dev.azure.com/your-org" -PatSecureString $securePat -ProjectName "MyProject" -OutputFormat json
+$securePat = Read-Host "Enter Azure DevOps PAT" -AsSecureString
+./ado_Information.ps1 -OrganizationUrl "https://your-org.visualstudio.com" -PatSecureString $securePat -OutputFormat both
+```
+
+### Azure DevOps Server (on-premises)
+```powershell
+$securePat = Read-Host "Enter Azure DevOps PAT" -AsSecureString
+./ado_Information.ps1 -OrganizationUrl "https://myserver/tfs/DefaultCollection" -PatSecureString $securePat -OutputFormat both
 ```
 
 ## Validation Checklist
