@@ -30,11 +30,23 @@ Source Azure DevOps organization or collection URL.
 .PARAMETER SourcePat
 PAT for the source organization as SecureString.
 
+.PARAMETER SourceBasicUsername
+Username for HTTP Basic authentication for the source organization.
+
+.PARAMETER SourceBasicPasswordSecureString
+Password for HTTP Basic authentication for the source organization.
+
 .PARAMETER DestinationOrganizationUrl
 Destination Azure DevOps organization or collection URL.
 
 .PARAMETER DestinationPat
 PAT for the destination organization as SecureString.
+
+.PARAMETER DestinationBasicUsername
+Username for HTTP Basic authentication for the destination organization.
+
+.PARAMETER DestinationBasicPasswordSecureString
+Password for HTTP Basic authentication for the destination organization.
 
 .PARAMETER ProjectName
 Optional project name to scope both source and destination to the same project.
@@ -99,12 +111,24 @@ param(
     [Security.SecureString]$SourcePat,
 
     [Parameter(Mandatory = $false)]
+    [string]$SourceBasicUsername,
+
+    [Parameter(Mandatory = $false)]
+    [Security.SecureString]$SourceBasicPasswordSecureString,
+
+    [Parameter(Mandatory = $false)]
     [Alias('DstOrg')]
     [string]$DestinationOrganizationUrl,
 
     [Parameter(Mandatory = $false)]
     [Alias('DstPat')]
     [Security.SecureString]$DestinationPat,
+
+    [Parameter(Mandatory = $false)]
+    [string]$DestinationBasicUsername,
+
+    [Parameter(Mandatory = $false)]
+    [Security.SecureString]$DestinationBasicPasswordSecureString,
 
     [Parameter(Mandatory = $false)]
     [Alias('Project')]
@@ -179,6 +203,8 @@ $Script:StopFilePath      = $StopFilePath
 $Script:AdoPlatform       = 'Cloud'
 $Script:AdoGraphApiVersion = '7.1-preview.1'
 $Script:HighRiskGitBits   = @()
+$Script:AdoBasicAuthUsername = $null
+$Script:AdoBasicAuthPassword = $null
 
 $scriptDir = Split-Path -Parent $PSCommandPath
 . (Join-Path $scriptDir 'src/ado.logging.ps1')
@@ -199,6 +225,8 @@ function Invoke-SnapshotCollection {
     param(
         [string]$OrgUrl,
         [Security.SecureString]$Pat,
+        [string]$BasicUsername,
+        [Security.SecureString]$BasicPassword,
         [string]$ProjectFilter
     )
 
@@ -210,12 +238,31 @@ function Invoke-SnapshotCollection {
     Write-Log -Level 'Info' -Message ('Platform: {0} | URL: {1}' -f $ctx.PlatformType, $ctx.OrganizationUrl)
 
     # Authenticate
+    if ($Pat -and (-not [string]::IsNullOrWhiteSpace($BasicUsername) -or $BasicPassword)) {
+        throw 'Use either PAT or Basic auth for one endpoint, not both.'
+    }
+    if ((-not [string]::IsNullOrWhiteSpace($BasicUsername) -and -not $BasicPassword) -or
+        ([string]::IsNullOrWhiteSpace($BasicUsername) -and $BasicPassword)) {
+        throw 'Basic authentication requires both BasicUsername and BasicPasswordSecureString.'
+    }
+
     if ($Pat) {
         $env:AZURE_DEVOPS_EXT_PAT = ConvertFrom-SecureStringToPlainText -Value $Pat
+        $Script:AdoBasicAuthUsername = $null
+        $Script:AdoBasicAuthPassword = $null
         Write-Log -Level 'Info' -Message 'Authentication: PAT provided.'
     }
+    elseif (-not [string]::IsNullOrWhiteSpace($BasicUsername) -and $BasicPassword) {
+        Remove-Item Env:AZURE_DEVOPS_EXT_PAT -ErrorAction SilentlyContinue
+        $Script:AdoBasicAuthUsername = $BasicUsername
+        $Script:AdoBasicAuthPassword = ConvertFrom-SecureStringToPlainText -Value $BasicPassword
+        Write-Log -Level 'Info' -Message ('Authentication: Basic username [{0}] provided.' -f $BasicUsername)
+    }
     else {
-        Write-Log -Level 'Info' -Message 'Authentication: using current az login context.'
+        Remove-Item Env:AZURE_DEVOPS_EXT_PAT -ErrorAction SilentlyContinue
+        $Script:AdoBasicAuthUsername = $null
+        $Script:AdoBasicAuthPassword = $null
+        Write-Log -Level 'Info' -Message 'Authentication: using az login context (cloud) or Windows integrated credentials (server).'
     }
 
     Start-Step -Name ('Validate: {0}' -f $ctx.OrganizationUrl)
@@ -227,7 +274,10 @@ function Invoke-SnapshotCollection {
     if (-not $projects -or $projects.Count -eq 0) { throw 'No projects found.' }
     Stop-Step -Result ('Count={0}' -f $projects.Count)
 
-    $subjects = Get-Subjects -OrgUrl $ctx.OrganizationUrl -LoadUsers $false
+    $subjects = @(Get-Subjects -OrgUrl $ctx.OrganizationUrl -LoadUsers $false)
+    if (-not $subjects) {
+        $subjects = @()
+    }
     Write-Log -Level 'Info' -Message ('Subjects loaded: {0}' -f $subjects.Count)
 
     Start-Step -Name 'Collect permissions'
@@ -258,6 +308,49 @@ function Invoke-SnapshotCollection {
     return Invoke-Snapshot -OrgUrl $ctx.OrganizationUrl -PlatformType $ctx.PlatformType `
         -Projects $projects -Subjects $subjects -AllRows $audit.AllRows `
         -MembershipRows $membershipRows -PolicyRows $policyRows -BuildRows $buildRows
+}
+
+function New-RowsByProjectMap {
+    param(
+        [Parameter(Mandatory = $true)]
+        [object[]]$Projects,
+
+        [Parameter(Mandatory = $true)]
+        [System.Collections.Generic.List[object]]$AllRows
+    )
+
+    $rowsByProject = @{}
+    foreach ($project in $Projects) {
+        $projectKey = [string]$project.name
+        if ([string]::IsNullOrWhiteSpace($projectKey)) {
+            $projectKey = [string]$project.id
+        }
+
+        $projectRows = @($AllRows | Where-Object {
+            ([string]$_.ProjectName -eq [string]$project.name) -or
+            ([string]$_.ProjectId -eq [string]$project.id)
+        })
+
+        $rowsByProject[$projectKey] = $projectRows
+    }
+
+    return $rowsByProject
+}
+
+function Export-SnapshotXlsx {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$SnapshotFolder,
+
+        [Parameter(Mandatory = $true)]
+        [object]$Snapshot
+    )
+
+    $rowsByProject = New-RowsByProjectMap -Projects @($Snapshot.Projects) -AllRows $Snapshot.AllRows
+
+    Export-Xlsx -OutputRoot $SnapshotFolder -Projects @($Snapshot.Projects) -RowsByProject $rowsByProject `
+        -AllRows $Snapshot.AllRows -OrgUrl $Snapshot.OrganizationUrl `
+        -MembershipRows @($Snapshot.MembershipRows) -PolicyRows @($Snapshot.PolicyRows)
 }
 
 # ------------------------------------------------------------------
@@ -313,16 +406,32 @@ try {
     # ---------- SNAPSHOT PHASE ----------
     if ($Mode -in @('Full', 'Snapshot')) {
         Write-Log -Level 'Info' -Message '--- Source snapshot ---'
-        $sourceSnapshot = Invoke-SnapshotCollection -OrgUrl $SourceOrganizationUrl -Pat $SourcePat -ProjectFilter $ProjectName
+        $sourceSnapshot = Invoke-SnapshotCollection -OrgUrl $SourceOrganizationUrl -Pat $SourcePat `
+            -BasicUsername $SourceBasicUsername -BasicPassword $SourceBasicPasswordSecureString `
+            -ProjectFilter $ProjectName
         $srcPath = Join-Path $Script:OutputRoot 'source-snapshot'
         Save-Snapshot -OutputPath $srcPath -Snapshot $sourceSnapshot
+
+        if ($OutputFormat -in @('xlsx', 'both')) {
+            Start-Step -Name 'Export source snapshot XLSX'
+            Export-SnapshotXlsx -SnapshotFolder $srcPath -Snapshot $sourceSnapshot
+            Stop-Step -Result 'OK'
+        }
     }
 
     if ($Mode -eq 'Full') {
         Write-Log -Level 'Info' -Message '--- Destination snapshot ---'
-        $destinationSnapshot = Invoke-SnapshotCollection -OrgUrl $DestinationOrganizationUrl -Pat $DestinationPat -ProjectFilter $ProjectName
+        $destinationSnapshot = Invoke-SnapshotCollection -OrgUrl $DestinationOrganizationUrl -Pat $DestinationPat `
+            -BasicUsername $DestinationBasicUsername -BasicPassword $DestinationBasicPasswordSecureString `
+            -ProjectFilter $ProjectName
         $dstPath = Join-Path $Script:OutputRoot 'dest-snapshot'
         Save-Snapshot -OutputPath $dstPath -Snapshot $destinationSnapshot
+
+        if ($OutputFormat -in @('xlsx', 'both')) {
+            Start-Step -Name 'Export destination snapshot XLSX'
+            Export-SnapshotXlsx -SnapshotFolder $dstPath -Snapshot $destinationSnapshot
+            Stop-Step -Result 'OK'
+        }
     }
 
     # ---------- LOAD PHASE (Compare mode) ----------

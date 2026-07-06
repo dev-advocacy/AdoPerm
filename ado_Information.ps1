@@ -26,6 +26,12 @@ Azure DevOps organization or collection URL.
 Personal Access Token as SecureString. If omitted, current az login context is used.
 A PAT is required for Azure DevOps Server (on-premises) when az login is not applicable.
 
+.PARAMETER BasicUsername
+Username for HTTP Basic authentication (mainly for older Azure DevOps Server/TFS).
+
+.PARAMETER BasicPasswordSecureString
+Password for HTTP Basic authentication as SecureString.
+
 .PARAMETER ProjectName
 Optional project filter. If omitted, all projects are processed.
 
@@ -88,6 +94,12 @@ param(
 
     [Parameter(Mandatory = $false)]
     [Security.SecureString]$PatSecureString,
+
+    [Parameter(Mandatory = $false)]
+    [string]$BasicUsername,
+
+    [Parameter(Mandatory = $false)]
+    [Security.SecureString]$BasicPasswordSecureString,
 
     [Parameter(Mandatory = $false)]
     [Alias('Project')]
@@ -185,6 +197,8 @@ $Script:AdoPlatform = 'Cloud'
 $Script:AdoGraphApiVersion = '7.1-preview.1'
 $Script:MembershipRows = @()
 $Script:PolicyRows     = @()
+$Script:AdoBasicAuthUsername = $null
+$Script:AdoBasicAuthPassword = $null
 
 $scriptDir = Split-Path -Parent $PSCommandPath
 . (Join-Path $scriptDir 'src/ado.logging.ps1')
@@ -219,12 +233,26 @@ try {
     Write-Log -Level 'Info' -Message ('Stop file path: {0} (create this file to cancel run)' -f $Script:StopFilePath)
     Write-Log -Level 'Info' -Message ('Output folder: {0}' -f $Script:OutputRoot)
 
+    if ($PatSecureString -and (-not [string]::IsNullOrWhiteSpace($BasicUsername) -or $BasicPasswordSecureString)) {
+        throw 'Use either PatSecureString or BasicUsername/BasicPasswordSecureString, not both.'
+    }
+
+    if ((-not [string]::IsNullOrWhiteSpace($BasicUsername) -and -not $BasicPasswordSecureString) -or
+        ([string]::IsNullOrWhiteSpace($BasicUsername) -and $BasicPasswordSecureString)) {
+        throw 'Basic authentication requires both BasicUsername and BasicPasswordSecureString.'
+    }
+
     if ($PatSecureString) {
         $env:AZURE_DEVOPS_EXT_PAT = ConvertFrom-SecureStringToPlainText -Value $PatSecureString
         Write-Log -Level 'Info' -Message 'Authentication configured with PatSecureString.'
     }
+    elseif (-not [string]::IsNullOrWhiteSpace($BasicUsername) -and $BasicPasswordSecureString) {
+        $Script:AdoBasicAuthUsername = $BasicUsername
+        $Script:AdoBasicAuthPassword = ConvertFrom-SecureStringToPlainText -Value $BasicPasswordSecureString
+        Write-Log -Level 'Info' -Message ('Authentication configured with Basic username: {0}' -f $BasicUsername)
+    }
     else {
-        Write-Log -Level 'Info' -Message 'Authentication configured with current az login context.'
+        Write-Log -Level 'Info' -Message 'Authentication configured with current az login context or Windows integrated credentials.'
     }
 
     Invoke-AdoValidation -OrgUrl $OrganizationUrl
@@ -238,7 +266,13 @@ try {
 
     $subjects = Get-Subjects -OrgUrl $OrganizationUrl -LoadUsers $IncludeUsers.IsPresent
     if (-not $subjects -or $subjects.Count -eq 0) {
-        throw 'No subjects found to audit.'
+        if ($Script:AdoPlatform -eq 'Server') {
+            Write-Log -Level 'Warn' -Message 'No subjects loaded. Continuing in Server direct-ACL mode.'
+            $subjects = @()
+        }
+        else {
+            throw 'No subjects found to audit.'
+        }
     }
     Write-Log -Level 'Info' -Message ('Subjects loaded: {0}' -f $subjects.Count)
 

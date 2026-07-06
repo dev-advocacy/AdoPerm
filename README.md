@@ -1,7 +1,7 @@
 # Azure DevOps Repository Permissions Audit
 
 This project provides a PowerShell script that audits Azure DevOps group and user permissions on Git repositories.
-It supports both **Azure DevOps Services** (cloud) and **Azure DevOps Server** (on-premises, 2019+).
+It supports **Azure DevOps Services** (cloud) and **Azure DevOps Server/TFS** (on-premises).
 
 Script file:
 - ado_Information.ps1
@@ -84,7 +84,7 @@ Install and configure the following:
 > The `az devops` CLI extension does not support Azure DevOps Server.
 > When the script detects an on-premises URL, it automatically switches to direct REST API calls
 > (see `src/ado.http.ps1`). Azure CLI is **not** required in this mode.
-> Authentication uses the PAT supplied via `-PatSecureString`.
+> Supported on-prem authentication modes are PAT, Basic username/password, and Windows integrated credentials.
 > Azure CLI is auto-installed only when targeting Azure DevOps Services.
 
 Minimum Azure DevOps access:
@@ -95,7 +95,84 @@ Minimum Azure DevOps access:
 Authentication options:
 - Interactive login with `az login` (Azure DevOps Services only)
 - Personal Access Token (PAT) passed to the script as a SecureString (`-PatSecureString`)
-- **A PAT is required for Azure DevOps Server (on-premises)**
+- Basic username/password for on-prem (`-BasicUsername` + `-BasicPasswordSecureString`)
+- Windows integrated credentials fallback on on-prem when no PAT/Basic is provided
+
+## Authentication by Platform and Version
+
+Use this matrix to pick the best authentication mode for your environment.
+
+| Platform / version | Recommended auth | Also supported | Notes |
+|---|---|---|---|
+| Azure DevOps Services (cloud) | PAT (`-PatSecureString`) | `az login` | Uses Azure DevOps CLI transport (`src/ado.client.ps1`). |
+| Azure DevOps Server 2019+ | PAT (`-PatSecureString`) | Basic, Windows integrated | Uses REST transport (`src/ado.http.ps1`). |
+| Azure DevOps Server 2015/2017 | Basic or Windows integrated | PAT (depends on server config) | Graph/Identities endpoints may be partial depending on patch level. |
+| TFS / very old on-prem (for example 2010 era) | Basic or Windows integrated | PAT usually unavailable/limited | Graph endpoints are commonly unavailable; script uses direct ACL mode where possible. |
+
+## Compatibility Notes (Cloud and On-Prem)
+
+Current behavior by platform generation:
+
+| Environment | Current support level | Practical notes |
+|---|---|---|
+| Azure DevOps Services (latest cloud) | Full | Uses CLI transport in cloud mode. PAT and az login are supported. |
+| Azure DevOps Server 2019/2020/2022 | Full | Uses REST transport in server mode. PAT, Basic, and Windows integrated are supported. |
+| Older Azure DevOps Server / legacy TFS | Best effort | Graph/Identities endpoints may be unavailable. Script falls back to direct ACL collection when possible. |
+
+Important:
+- On some legacy servers, identity/group enrichment can be limited because Graph endpoints are not exposed.
+- Permission collection can still proceed through direct ACL mode in many of those cases.
+
+## Authentication Examples (English)
+
+### 1) Cloud with PAT (recommended)
+
+```powershell
+$pat = Read-Host "Enter PAT" -AsSecureString
+./ado_Information.ps1 -OrganizationUrl "https://dev.azure.com/your-org" -PatSecureString $pat -OutputFormat both
+```
+
+### 2) Cloud with az login (no PAT parameter)
+
+```powershell
+az login
+./ado_Information.ps1 -OrganizationUrl "https://dev.azure.com/your-org" -OutputFormat json
+```
+
+### 3) On-prem (Server/TFS) with PAT
+
+```powershell
+$pat = Read-Host "Enter PAT" -AsSecureString
+./ado_Information.ps1 -OrganizationUrl "http://myserver/Collection" -PatSecureString $pat -OutputFormat both
+```
+
+### 4) On-prem with Basic authentication
+
+```powershell
+$user = "DOMAIN\\username"
+$pwd  = Read-Host "Enter Basic password" -AsSecureString
+./ado_Information.ps1 -OrganizationUrl "http://myserver/Collection" -BasicUsername $user -BasicPasswordSecureString $pwd
+```
+
+### 5) On-prem with Windows integrated credentials
+
+```powershell
+# Run PowerShell as a user that already has access to the server/collection.
+./ado_Information.ps1 -OrganizationUrl "http://myserver/Collection" -OutputFormat json
+```
+
+### 6) Legacy on-prem (older TFS) with Basic auth and minimal options
+
+```powershell
+$user = "username"
+$pwd  = Read-Host "Enter password" -AsSecureString
+./ado_Information.ps1 -OrganizationUrl "http://legacy-tfs/Collection" -BasicUsername $user -BasicPasswordSecureString $pwd -OutputFormat json
+```
+
+Notes:
+- Do not pass PAT and Basic parameters together in the same command.
+- For Basic auth, always provide both `-BasicUsername` and `-BasicPasswordSecureString`.
+- If on-prem endpoints for groups/users are unavailable, the script can continue with direct ACL-based auditing.
 
 ## Files
 
@@ -137,8 +214,8 @@ flowchart TD
 |---|---|---|
 | `https://dev.azure.com/{org}` | Cloud | `az devops` CLI |
 | `https://{org}.visualstudio.com` | Cloud | `az devops` CLI |
-| `https://{server}/{collection}` | Server | REST HTTP (PAT Basic auth) |
-| `https://{server}/tfs/{collection}` | Server | REST HTTP (PAT Basic auth) |
+| `https://{server}/{collection}` | Server | REST HTTP (PAT / Basic / Windows integrated) |
+| `https://{server}/tfs/{collection}` | Server | REST HTTP (PAT / Basic / Windows integrated) |
 
 `ado.http.ps1` overrides the following functions at script scope when Server is detected:
 `Invoke-AdoValidation`, `Get-Projects`, `Get-Subjects`, `Get-Repositories`,

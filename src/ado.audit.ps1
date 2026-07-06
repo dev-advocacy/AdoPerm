@@ -197,6 +197,7 @@ function Invoke-Audit {
             foreach ($repo in $repos) {
                 Assert-NotCancelled
                 $token = 'repoV2/{0}/{1}' -f $project.id, $repo.id
+                $repoFileCount = Get-RepositoryFileCount -OrgUrl $OrgUrl -Project $project -Repository $repo
 
                 foreach ($subject in $Subjects) {
                     Assert-NotCancelled
@@ -210,7 +211,7 @@ function Invoke-Audit {
                             continue
                         }
 
-                        $row = New-AuditRow -OrgUrl $OrgUrl -Project $project -Repository $repo -Token $token -Subject $subject -Entry $entry
+                        $row = New-AuditRow -OrgUrl $OrgUrl -Project $project -Repository $repo -Token $token -Subject $subject -Entry $entry -RepositoryFileCount $repoFileCount
                         [void]$projectRows.Add($row)
                         [void]$allRows.Add($row)
                     }

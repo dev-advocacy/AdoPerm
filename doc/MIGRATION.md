@@ -12,11 +12,11 @@ It supports every migration topology: **cloud-to-cloud**, **on-prem-to-cloud**, 
 flowchart LR
     subgraph Source
         SrcOrg([Source Org URL\ncloud or on-prem])
-        SrcPAT([Source PAT])
+        SrcAuth([Source Auth\nPAT / Basic / Integrated])
     end
     subgraph Destination
         DstOrg([Destination Org URL\ncloud or on-prem])
-        DstPAT([Destination PAT])
+        DstAuth([Destination Auth\nPAT / Basic / Integrated])
     end
     subgraph Script[ado_Migration.ps1]
         Ctx1[Detect platform\nresolve context]
@@ -32,8 +32,8 @@ flowchart LR
         XLSX[migration-diff.xlsx]
     end
 
-    SrcOrg & SrcPAT --> Ctx1 --> Snap1 --> SrcSnap
-    DstOrg & DstPAT --> Ctx2 --> Snap2 --> DstSnap
+    SrcOrg & SrcAuth --> Ctx1 --> Snap1 --> SrcSnap
+    DstOrg & DstAuth --> Ctx2 --> Snap2 --> DstSnap
     Snap1 & Snap2 --> Compare --> JSON & XLSX
 ```
 
@@ -75,7 +75,13 @@ Each organization URL is detected independently:
 | `https://{server}/{collection}` | Server | `5.1-preview.1` |
 | `https://{server}/tfs/{collection}` | Server | `5.1-preview.1` |
 
-This allows cross-platform comparisons (e.g., on-prem 2022 → Azure DevOps Services).
+This allows cross-platform comparisons (for example, on-prem -> Azure DevOps Services).
+
+Compatibility and authentication notes:
+- Cloud (latest): PAT or az login context.
+- On-prem recent (Server 2019+): PAT, Basic, or Windows integrated credentials.
+- On-prem legacy: Graph/Identities endpoints may be unavailable; snapshot collection can continue in direct ACL mode where possible.
+- Source and destination can use different authentication modes in the same Full run.
 
 ---
 
@@ -97,11 +103,13 @@ flowchart TD
     SrcDir --> SX[snapshot.permissions.json]
     SrcDir --> SMM[snapshot.membership.json\n-Membership only]
     SrcDir --> SPP[snapshot.policies.json\n-Policies only]
+    SrcDir --> SXLSX[ADO_Repo_Permissions.xlsx\nwhen -Out xlsx/both]
 
     DstDir --> DM[snapshot.meta.json]
     DstDir --> DP[snapshot.projects.json]
     DstDir --> DS[snapshot.subjects.json]
     DstDir --> DX[snapshot.permissions.json]
+    DstDir --> DXLSX[ADO_Repo_Permissions.xlsx\nwhen -Out xlsx/both]
 
     DiffXLSX --> XS[Summary]
     DiffXLSX --> XR[RepoChanges]
@@ -216,8 +224,12 @@ flowchart LR
 | `-Mode` | | No | `Snapshot`, `Compare`, or `Full` (default: `Full`) |
 | `-SourceOrganizationUrl` | `-SrcOrg` | Snapshot/Full | Source ADO org or collection URL |
 | `-SourcePat` | `-SrcPat` | No | Source PAT as SecureString |
+| `-SourceBasicUsername` | | No | Source Basic auth username (on-prem) |
+| `-SourceBasicPasswordSecureString` | | No | Source Basic auth password as SecureString (on-prem) |
 | `-DestinationOrganizationUrl` | `-DstOrg` | Full | Destination ADO org or collection URL |
 | `-DestinationPat` | `-DstPat` | No | Destination PAT as SecureString |
+| `-DestinationBasicUsername` | | No | Destination Basic auth username (on-prem) |
+| `-DestinationBasicPasswordSecureString` | | No | Destination Basic auth password as SecureString (on-prem) |
 | `-ProjectName` | `-Project` | No | Scope both orgs to the same project name |
 | `-SourceSnapshotPath` | | Compare | Path to existing source snapshot folder |
 | `-DestinationSnapshotPath` | | Compare | Path to existing destination snapshot folder |
@@ -264,6 +276,35 @@ $srcPat = Read-Host "Source PAT" -AsSecureString
 ./ado_Migration.ps1 -Mode Snapshot `
     -SrcOrg "https://myserver/tfs/DefaultCollection" -SrcPat $srcPat `
     -Membership -Policies
+```
+
+### Capture snapshot before migration (on-prem Basic auth)
+
+```powershell
+$srcUser = "DOMAIN\\user"
+$srcPwd  = Read-Host "Source password" -AsSecureString
+
+./ado_Migration.ps1 -Mode Snapshot `
+    -SourceOrganizationUrl "http://myserver/Collection" `
+    -SourceBasicUsername $srcUser `
+    -SourceBasicPasswordSecureString $srcPwd `
+    -Out both
+```
+
+### Full comparison with mixed auth (on-prem source, cloud destination)
+
+```powershell
+$srcUser = "DOMAIN\\user"
+$srcPwd  = Read-Host "Source password" -AsSecureString
+$dstPat  = Read-Host "Destination PAT" -AsSecureString
+
+./ado_Migration.ps1 -Mode Full `
+    -SourceOrganizationUrl "http://myserver/Collection" `
+    -SourceBasicUsername $srcUser `
+    -SourceBasicPasswordSecureString $srcPwd `
+    -DestinationOrganizationUrl "https://dev.azure.com/my-org" `
+    -DestinationPat $dstPat `
+    -Out both
 ```
 
 ### Compare saved snapshots after migration

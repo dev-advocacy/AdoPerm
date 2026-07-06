@@ -17,10 +17,26 @@ function Write-Log {
     $stepElapsed = if ($Script:StepStopwatch.IsRunning) { $Script:StepStopwatch.Elapsed.ToString('hh\:mm\:ss\.fff') } else { '00:00:00.000' }
     $line = '[{0}] [{1}] [Run+{2}] [Step+{3}] {4}' -f $ts, $Level.ToUpperInvariant(), $runElapsed, $stepElapsed, $Message
 
+    $isSuccessInfo = (
+        $Level -eq 'Info' -and (
+            (($Message -like 'STEP END:*') -and ($Message -notmatch 'Result=FAILED')) -or
+            ($Message -eq 'Done.') -or
+            ($Message -like 'XLSX written:*') -or
+            ($Message -like 'Snapshot saved to:*')
+        )
+    )
+
     switch ($Level) {
         'Warn' { Write-Warning $line }
         'Error' { Write-Host $line -ForegroundColor Red }
-        default { Write-Host $line }
+        default {
+            if ($isSuccessInfo) {
+                Write-Host $line -ForegroundColor Green
+            }
+            else {
+                Write-Host $line
+            }
+        }
     }
 
     if (-not [string]::IsNullOrWhiteSpace($Script:LogFilePath)) {

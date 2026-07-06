@@ -321,6 +321,7 @@ function Get-WorkbookRepositoryMatrixColumns {
         'ProjectName',
         'RepositoryName',
         'RepositoryId',
+        'RepositoryFileCount',
         'SubjectAssignments',
         'DistinctSubjects',
         'UserSubjects',
@@ -330,6 +331,137 @@ function Get-WorkbookRepositoryMatrixColumns {
         'RowsWithAnyPermissionBits',
         'RowsWithInheritanceEnabled'
     )
+}
+
+function Get-WorkbookTotalsColumns {
+    return @(
+        'Organization',
+        'ProjectCount',
+        'RepositoryCount',
+        'DistinctSubjectCount',
+        'DistinctUserCount',
+        'DistinctGroupCount',
+        'AuditRows',
+        'RowsWithAllowBits',
+        'RowsWithDenyBits',
+        'RowsWithAnyPermissionBits',
+        'RowsWithInheritanceEnabled',
+        'DistinctRepositoriesWithAnyPermission',
+        'DistinctRepositoriesWithDeny',
+        'AllowAssignments',
+        'DenyAssignments'
+    )
+}
+
+function New-WorkbookTotalsRows {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$OrgUrl,
+
+        [Parameter(Mandatory = $true)]
+        [object[]]$Projects,
+
+        [Parameter(Mandatory = $true)]
+        [System.Collections.Generic.List[object]]$AllRows
+    )
+
+    $rows = @($AllRows)
+
+    $repositoryIds = @(
+        $rows | ForEach-Object { $_.RepositoryId } |
+            Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } |
+            Sort-Object -Unique
+    )
+
+    $subjectKeys = @(
+        $rows |
+            ForEach-Object {
+                if (-not [string]::IsNullOrWhiteSpace([string]$_.SubjectDescriptor)) {
+                    return [string]$_.SubjectDescriptor
+                }
+
+                if (-not [string]::IsNullOrWhiteSpace([string]$_.SubjectPrincipalName)) {
+                    return [string]$_.SubjectPrincipalName
+                }
+
+                return [string]$_.SubjectDisplayName
+            } |
+            Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } |
+            Sort-Object -Unique
+    )
+
+    $userKeys = @(
+        $rows | Where-Object { $_.SubjectType -eq 'User' } |
+            ForEach-Object {
+                if (-not [string]::IsNullOrWhiteSpace([string]$_.SubjectDescriptor)) {
+                    return [string]$_.SubjectDescriptor
+                }
+                if (-not [string]::IsNullOrWhiteSpace([string]$_.SubjectPrincipalName)) {
+                    return [string]$_.SubjectPrincipalName
+                }
+                return [string]$_.SubjectDisplayName
+            } |
+            Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } |
+            Sort-Object -Unique
+    )
+
+    $groupKeys = @(
+        $rows | Where-Object { $_.SubjectType -eq 'Group' } |
+            ForEach-Object {
+                if (-not [string]::IsNullOrWhiteSpace([string]$_.SubjectDescriptor)) {
+                    return [string]$_.SubjectDescriptor
+                }
+                if (-not [string]::IsNullOrWhiteSpace([string]$_.SubjectPrincipalName)) {
+                    return [string]$_.SubjectPrincipalName
+                }
+                return [string]$_.SubjectDisplayName
+            } |
+            Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } |
+            Sort-Object -Unique
+    )
+
+    $rowsWithAllow = @($rows | Where-Object { $_.AllowBits -ne 0 })
+    $rowsWithDeny = @($rows | Where-Object { $_.DenyBits -ne 0 })
+    $rowsWithAnyPermission = @($rows | Where-Object {
+        $_.AllowBits -ne 0 -or
+        $_.DenyBits -ne 0 -or
+        ($null -ne $_.EffectiveAllowBits -and $_.EffectiveAllowBits -ne 0) -or
+        ($null -ne $_.EffectiveDenyBits -and $_.EffectiveDenyBits -ne 0) -or
+        ($null -ne $_.InheritedAllowBits -and $_.InheritedAllowBits -ne 0) -or
+        ($null -ne $_.InheritedDenyBits -and $_.InheritedDenyBits -ne 0)
+    })
+
+    $reposWithAnyPermission = @(
+        $rowsWithAnyPermission |
+            ForEach-Object { $_.RepositoryId } |
+            Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } |
+            Sort-Object -Unique
+    )
+
+    $reposWithDeny = @(
+        $rowsWithDeny |
+            ForEach-Object { $_.RepositoryId } |
+            Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } |
+            Sort-Object -Unique
+    )
+
+    return @([PSCustomObject]@{
+        Organization                          = $OrgUrl
+        ProjectCount                          = @($Projects).Count
+        RepositoryCount                       = $repositoryIds.Count
+        DistinctSubjectCount                  = $subjectKeys.Count
+        DistinctUserCount                     = $userKeys.Count
+        DistinctGroupCount                    = $groupKeys.Count
+        AuditRows                             = $rows.Count
+        RowsWithAllowBits                     = $rowsWithAllow.Count
+        RowsWithDenyBits                      = $rowsWithDeny.Count
+        RowsWithAnyPermissionBits             = $rowsWithAnyPermission.Count
+        RowsWithInheritanceEnabled            = @($rows | Where-Object { $_.InheritanceEnabled }).Count
+        DistinctRepositoriesWithAnyPermission = $reposWithAnyPermission.Count
+        DistinctRepositoriesWithDeny          = $reposWithDeny.Count
+        AllowAssignments                      = $rowsWithAllow.Count
+        DenyAssignments                       = $rowsWithDeny.Count
+    })
 }
 
 function New-WorkbookRepositoryMatrixRows {
@@ -373,6 +505,7 @@ function New-WorkbookRepositoryMatrixRows {
             ProjectName               = [string]$project.name
             RepositoryName            = [string]$firstRow.RepositoryName
             RepositoryId              = [string]$firstRow.RepositoryId
+            RepositoryFileCount       = if ($null -ne $firstRow.RepositoryFileCount) { [long]$firstRow.RepositoryFileCount } else { '' }
             SubjectAssignments        = $repoRows.Count
             DistinctSubjects          = $distinctSubjects.Count
             UserSubjects              = @($repoRows | Where-Object { $_.SubjectType -eq 'User' } | ForEach-Object { $_.SubjectDescriptor } | Sort-Object -Unique).Count
@@ -499,6 +632,45 @@ function Export-Xlsx {
         }
     }
 
+    # ---- Totals sheet (single global row across all projects) ----
+    $totalsSheet = 'Totals'
+    if ($sheetNameSet.ContainsKey($totalsSheet)) { $totalsSheet = 'Totals_1' }
+    $sheetNameSet[$totalsSheet] = $true
+
+    $totalsColumns = Get-WorkbookTotalsColumns
+    $totalsRows = @(New-WorkbookTotalsRows -OrgUrl $OrgUrl -Projects $Projects -AllRows $AllRows)
+
+    $totalsTableName = ConvertTo-SafeExcelTableName -Name 'TotalsTable'
+    $excelPackage = $totalsRows | Export-Excel -ExcelPackage $excelPackage -WorksheetName $totalsSheet `
+        -TableName $totalsTableName -AutoSize -FreezeTopRow -BoldTopRow -TableStyle Medium2 -PassThru
+
+    $totalsColumnWidths = @{
+        Organization                          = 28
+        ProjectCount                          = 12
+        RepositoryCount                       = 14
+        DistinctSubjectCount                  = 18
+        DistinctUserCount                     = 16
+        DistinctGroupCount                    = 17
+        AuditRows                             = 12
+        RowsWithAllowBits                     = 16
+        RowsWithDenyBits                      = 16
+        RowsWithAnyPermissionBits             = 24
+        RowsWithInheritanceEnabled            = 24
+        DistinctRepositoriesWithAnyPermission = 31
+        DistinctRepositoriesWithDeny          = 27
+        AllowAssignments                      = 16
+        DenyAssignments                       = 16
+    }
+
+    foreach ($totalsColumn in $totalsColumns) {
+        if ($totalsColumnWidths.ContainsKey($totalsColumn)) {
+            $totalsIndex = [Array]::IndexOf($totalsColumns, $totalsColumn) + 1
+            if ($totalsIndex -gt 0) {
+                Set-ExcelColumn -ExcelPackage $excelPackage -Worksheetname $totalsSheet -Column $totalsIndex -Width $totalsColumnWidths[$totalsColumn]
+            }
+        }
+    }
+
     # ---- Subjects sheet (groups and users with aggregated permissions) ----
     $subjectsSheet = 'Subjects'
     if ($sheetNameSet.ContainsKey($subjectsSheet)) { $subjectsSheet = 'Subjects_1' }
@@ -583,6 +755,7 @@ function Export-Xlsx {
                 ProjectName                = [string]$project.name
                 RepositoryName             = ''
                 RepositoryId               = ''
+                RepositoryFileCount        = ''
                 SubjectAssignments         = 0
                 DistinctSubjects           = 0
                 UserSubjects               = 0
@@ -622,6 +795,7 @@ function Export-Xlsx {
             ProjectName                = 24
             RepositoryName             = 28
             RepositoryId               = 24
+            RepositoryFileCount       = 18
             SubjectAssignments         = 16
             DistinctSubjects           = 16
             UserSubjects               = 12

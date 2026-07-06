@@ -10,6 +10,7 @@ function Invoke-Snapshot {
         [object[]]$Projects,
 
         [Parameter(Mandatory = $true)]
+        [AllowEmptyCollection()]
         [object[]]$Subjects,
 
         [Parameter(Mandatory = $true)]

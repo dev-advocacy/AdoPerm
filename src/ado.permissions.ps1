@@ -172,6 +172,22 @@ function Test-ExportEntry {
     )
 }
 
+function Get-RepositoryFileCount {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$OrgUrl,
+
+        [Parameter(Mandatory = $true)]
+        [object]$Project,
+
+        [Parameter(Mandatory = $true)]
+        [object]$Repository
+    )
+
+    # Default implementation (cloud/CLI path): unavailable unless overridden.
+    return $null
+}
+
 function New-AuditRow {
     param(
         [Parameter(Mandatory = $true)]
@@ -190,7 +206,10 @@ function New-AuditRow {
         [object]$Subject,
 
         [Parameter(Mandatory = $true)]
-        [object]$Entry
+        [object]$Entry,
+
+        [Parameter(Mandatory = $false)]
+        [Nullable[long]]$RepositoryFileCount = $null
     )
 
     $row = [ordered]@{
@@ -199,6 +218,7 @@ function New-AuditRow {
         ProjectId             = $Project.id
         RepositoryName        = $Repository.name
         RepositoryId          = $Repository.id
+        RepositoryFileCount   = $RepositoryFileCount
         Token                 = $Token
         SubjectType           = $Subject.SubjectType
         SubjectDisplayName    = $Subject.DisplayName

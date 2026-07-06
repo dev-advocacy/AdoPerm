@@ -60,6 +60,14 @@ function Compare-Snapshots {
         (@($buildChanges | Where-Object { $_.DiffStatus -eq 'Removed' -or $_.DiffStatus -eq 'Changed' }).Count -eq 0)) {
         'Clean'
     }
+
+    $migrationChecks = @(New-MigrationChecksRows -Source $Source -Destination $Destination -ComparisonSummary @{
+            RemovedRepositories = $removedRepos
+            RemovedGroups       = $removedGroups
+            RemovedPermissions  = $removedPerms
+            ChangedPermissions  = $changedPerms
+            ChangedPolicies     = @($policyChanges | Where-Object { $_.DiffStatus -ne 'Matched' }).Count
+        })
     elseif ($changedPerms -gt 0 -or $removedPerms -gt 0 -or
         (@($buildChanges | Where-Object { $_.DiffStatus -eq 'Removed' -or $_.DiffStatus -eq 'Changed' }).Count -gt 0)) {
         'PermissionDrift'
@@ -90,6 +98,7 @@ function Compare-Snapshots {
             ChangedPolicies     = @($policyChanges     | Where-Object { $_.DiffStatus -ne 'Matched' }).Count
         }
         Counts             = $countsRows
+        MigrationChecks    = $migrationChecks
         RepoChanges        = $repoChanges
         GroupChanges       = $groupChanges
         PermissionChanges  = $permissionChanges
@@ -97,6 +106,203 @@ function Compare-Snapshots {
         MembershipChanges  = $membershipChanges
         PolicyChanges      = $policyChanges
     }
+}
+
+function Get-RepoMigrationStats {
+    param([object]$Snapshot)
+
+    $rows = @($Snapshot.AllRows)
+    $repoMap = @{}
+
+    foreach ($row in $rows) {
+        $projectName = [string]$row.ProjectName
+        $repoName = [string]$row.RepositoryName
+        if ([string]::IsNullOrWhiteSpace($projectName) -or [string]::IsNullOrWhiteSpace($repoName)) {
+            continue
+        }
+
+        $key = ('{0}|{1}' -f $projectName, $repoName).ToLowerInvariant()
+        if (-not $repoMap.ContainsKey($key)) {
+            $repoMap[$key] = [PSCustomObject]@{
+                ProjectName         = $projectName
+                RepositoryName      = $repoName
+                RepositoryId        = [string]$row.RepositoryId
+                BranchCount         = $null
+                TagCount            = $null
+                RepositoryFileCount = $null
+                DefaultBranch       = ''
+                HeadCommitId        = ''
+            }
+        }
+
+        $entry = $repoMap[$key]
+
+        if ($null -eq $entry.RepositoryFileCount -and $null -ne $row.RepositoryFileCount -and "$($row.RepositoryFileCount)" -ne '') {
+            $entry.RepositoryFileCount = [long]$row.RepositoryFileCount
+        }
+        if ($null -eq $entry.BranchCount -and $null -ne $row.BranchCount -and "$($row.BranchCount)" -ne '') {
+            $entry.BranchCount = [long]$row.BranchCount
+        }
+        if ($null -eq $entry.TagCount -and $null -ne $row.TagCount -and "$($row.TagCount)" -ne '') {
+            $entry.TagCount = [long]$row.TagCount
+        }
+        if ([string]::IsNullOrWhiteSpace($entry.DefaultBranch) -and -not [string]::IsNullOrWhiteSpace([string]$row.DefaultBranch)) {
+            $entry.DefaultBranch = [string]$row.DefaultBranch
+        }
+        if ([string]::IsNullOrWhiteSpace($entry.HeadCommitId) -and -not [string]::IsNullOrWhiteSpace([string]$row.HeadCommitId)) {
+            $entry.HeadCommitId = [string]$row.HeadCommitId
+        }
+    }
+
+    return $repoMap
+}
+
+function New-MigrationChecksRows {
+    param(
+        [Parameter(Mandatory = $true)]
+        [object]$Source,
+
+        [Parameter(Mandatory = $true)]
+        [object]$Destination,
+
+        [Parameter(Mandatory = $true)]
+        [hashtable]$ComparisonSummary
+    )
+
+    $rows = New-Object System.Collections.Generic.List[object]
+
+    function Add-CheckRow {
+        param(
+            [string]$Category,
+            [string]$Check,
+            [object]$SourceValue,
+            [object]$DestinationValue,
+            [string]$Status,
+            [string]$Details
+        )
+
+        [void]$rows.Add([PSCustomObject]@{
+            Category         = $Category
+            Check            = $Check
+            SourceValue      = [string]$SourceValue
+            DestinationValue = [string]$DestinationValue
+            Delta            = Get-DeltaDisplay -SourceValue $SourceValue -DestinationValue $DestinationValue
+            Status           = $Status
+            Details          = $Details
+        })
+    }
+
+    $srcProjectCount = @($Source.Projects).Count
+    $dstProjectCount = @($Destination.Projects).Count
+    Add-CheckRow -Category 'Structure' -Check 'Project count' -SourceValue $srcProjectCount -DestinationValue $dstProjectCount `
+        -Status (if ($srcProjectCount -eq $dstProjectCount) { 'OK' } else { 'Fail' }) -Details ''
+
+    $srcRepos = Get-RepoMigrationStats -Snapshot $Source
+    $dstRepos = Get-RepoMigrationStats -Snapshot $Destination
+    $srcRepoCount = @($srcRepos.Keys).Count
+    $dstRepoCount = @($dstRepos.Keys).Count
+    Add-CheckRow -Category 'Structure' -Check 'Repository count' -SourceValue $srcRepoCount -DestinationValue $dstRepoCount `
+        -Status (if ($srcRepoCount -eq $dstRepoCount) { 'OK' } else { 'Fail' }) -Details ''
+
+    $allRepoKeys = @(($srcRepos.Keys + $dstRepos.Keys) | Sort-Object -Unique)
+
+    $matchedRepoCount = @($allRepoKeys | Where-Object { $srcRepos.ContainsKey($_) -and $dstRepos.ContainsKey($_) }).Count
+    $structuralMatchPct = if ($srcRepoCount -gt 0) { [math]::Round(($matchedRepoCount / [double]$srcRepoCount) * 100, 2) } else { 100 }
+    Add-CheckRow -Category 'Score' -Check 'StructuralMatchPct' -SourceValue '100' -DestinationValue $structuralMatchPct `
+        -Status (if ($structuralMatchPct -eq 100) { 'OK' } elseif ($structuralMatchPct -ge 95) { 'Warn' } else { 'Fail' }) -Details ''
+
+    $branchMismatch = 0
+    $tagMismatch = 0
+    $fileCountMismatch = 0
+    $defaultBranchMismatch = 0
+    $headMismatch = 0
+    $branchCompared = 0
+    $tagCompared = 0
+    $fileCompared = 0
+    $defaultCompared = 0
+    $headCompared = 0
+
+    foreach ($repoKey in $allRepoKeys) {
+        if (-not ($srcRepos.ContainsKey($repoKey) -and $dstRepos.ContainsKey($repoKey))) {
+            continue
+        }
+
+        $src = $srcRepos[$repoKey]
+        $dst = $dstRepos[$repoKey]
+
+        if ($null -ne $src.BranchCount -and $null -ne $dst.BranchCount) {
+            $branchCompared++
+            if ([long]$src.BranchCount -ne [long]$dst.BranchCount) { $branchMismatch++ }
+        }
+
+        if ($null -ne $src.TagCount -and $null -ne $dst.TagCount) {
+            $tagCompared++
+            if ([long]$src.TagCount -ne [long]$dst.TagCount) { $tagMismatch++ }
+        }
+
+        if ($null -ne $src.RepositoryFileCount -and $null -ne $dst.RepositoryFileCount) {
+            $fileCompared++
+            if ([long]$src.RepositoryFileCount -ne [long]$dst.RepositoryFileCount) { $fileCountMismatch++ }
+        }
+
+        if (-not [string]::IsNullOrWhiteSpace($src.DefaultBranch) -and -not [string]::IsNullOrWhiteSpace($dst.DefaultBranch)) {
+            $defaultCompared++
+            if ($src.DefaultBranch -ne $dst.DefaultBranch) { $defaultBranchMismatch++ }
+        }
+
+        if (-not [string]::IsNullOrWhiteSpace($src.HeadCommitId) -and -not [string]::IsNullOrWhiteSpace($dst.HeadCommitId)) {
+            $headCompared++
+            if ($src.HeadCommitId -ne $dst.HeadCommitId) { $headMismatch++ }
+        }
+    }
+
+    Add-CheckRow -Category 'Content' -Check 'Branch count mismatches' -SourceValue $branchCompared -DestinationValue $branchMismatch `
+        -Status (if ($branchCompared -eq 0) { 'Warn' } elseif ($branchMismatch -eq 0) { 'OK' } else { 'Warn' }) -Details 'Compared repos with branch count present in source+destination.'
+    Add-CheckRow -Category 'Content' -Check 'Tag count mismatches' -SourceValue $tagCompared -DestinationValue $tagMismatch `
+        -Status (if ($tagCompared -eq 0) { 'Warn' } elseif ($tagMismatch -eq 0) { 'OK' } else { 'Warn' }) -Details 'Compared repos with tag count present in source+destination.'
+    Add-CheckRow -Category 'Content' -Check 'Repository file count mismatches' -SourceValue $fileCompared -DestinationValue $fileCountMismatch `
+        -Status (if ($fileCompared -eq 0) { 'Warn' } elseif ($fileCountMismatch -eq 0) { 'OK' } else { 'Warn' }) -Details 'Compared repos with file count present in source+destination.'
+    Add-CheckRow -Category 'Content' -Check 'Default branch mismatches' -SourceValue $defaultCompared -DestinationValue $defaultBranchMismatch `
+        -Status (if ($defaultCompared -eq 0) { 'Warn' } elseif ($defaultBranchMismatch -eq 0) { 'OK' } else { 'Warn' }) -Details 'Compared repos with default branch present in source+destination.'
+    Add-CheckRow -Category 'Content' -Check 'HEAD commit mismatches' -SourceValue $headCompared -DestinationValue $headMismatch `
+        -Status (if ($headCompared -eq 0) { 'Warn' } elseif ($headMismatch -eq 0) { 'OK' } else { 'Warn' }) -Details 'Compared repos with HEAD commit present in source+destination.'
+
+    $permissionDriftCount = [int]$ComparisonSummary.RemovedPermissions + [int]$ComparisonSummary.ChangedPermissions
+    Add-CheckRow -Category 'Security' -Check 'PermissionDriftCount' -SourceValue 0 -DestinationValue $permissionDriftCount `
+        -Status (if ($permissionDriftCount -eq 0) { 'OK' } else { 'Fail' }) -Details 'Removed + changed repository permission assignments.'
+
+    $policyDriftCount = [int]$ComparisonSummary.ChangedPolicies
+    Add-CheckRow -Category 'Security' -Check 'PolicyDriftCount' -SourceValue 0 -DestinationValue $policyDriftCount `
+        -Status (if ($policyDriftCount -eq 0) { 'OK' } else { 'Warn' }) -Details 'Branch policy differences (added/removed/changed).'
+
+    Add-CheckRow -Category 'Structure' -Check 'Missing repositories in destination' -SourceValue 0 -DestinationValue ([int]$ComparisonSummary.RemovedRepositories) `
+        -Status (if ([int]$ComparisonSummary.RemovedRepositories -eq 0) { 'OK' } else { 'Fail' }) -Details ''
+
+    Add-CheckRow -Category 'Security' -Check 'Missing groups in destination' -SourceValue 0 -DestinationValue ([int]$ComparisonSummary.RemovedGroups) `
+        -Status (if ([int]$ComparisonSummary.RemovedGroups -eq 0) { 'OK' } else { 'Warn' }) -Details ''
+
+    return $rows.ToArray()
+}
+
+function Get-DeltaDisplay {
+    param([object]$SourceValue, [object]$DestinationValue)
+
+    $srcNumber = 0.0
+    $dstNumber = 0.0
+    $canParseSrc = [double]::TryParse([string]$SourceValue, [ref]$srcNumber)
+    $canParseDst = [double]::TryParse([string]$DestinationValue, [ref]$dstNumber)
+
+    if ($canParseSrc -and $canParseDst) {
+        $delta = $dstNumber - $srcNumber
+        if ($delta -gt 0) { return ('+{0}' -f $delta) }
+        return [string]$delta
+    }
+
+    if ([string]$SourceValue -eq [string]$DestinationValue) {
+        return '0'
+    }
+
+    return 'n/a'
 }
 
 function Compare-Repositories {
@@ -480,6 +686,19 @@ function Export-ComparisonXlsx {
     })
     $excelPackage = $countsDisplay | Export-Excel -ExcelPackage $excelPackage -WorksheetName 'Counts' -TableName 'CountsTable' `
         -AutoSize -FreezeTopRow -BoldTopRow -TableStyle Medium2 -ConditionalText $countConditionals -PassThru
+
+    # -- Migration checks sheet --
+    $checkConditionals = @(
+        (New-ConditionalText -Text 'OK' -ConditionalType ContainsText -ConditionalTextColor 'DarkGreen' -BackgroundColor 'LightGreen'),
+        (New-ConditionalText -Text 'Warn' -ConditionalType ContainsText -ConditionalTextColor '#7B3700' -BackgroundColor 'LightYellow'),
+        (New-ConditionalText -Text 'Fail' -ConditionalType ContainsText -ConditionalTextColor 'DarkRed' -BackgroundColor 'LightSalmon')
+    )
+    $checkRows = @($Comparison.MigrationChecks)
+    if (-not $checkRows -or $checkRows.Count -eq 0) {
+        $checkRows = @([PSCustomObject]@{ Category = ''; Check = '(no checks)'; SourceValue = ''; DestinationValue = ''; Delta = ''; Status = ''; Details = '' })
+    }
+    $excelPackage = $checkRows | Export-Excel -ExcelPackage $excelPackage -WorksheetName 'MigrationChecks' -TableName 'MigrationChecksTable' `
+        -AutoSize -FreezeTopRow -BoldTopRow -TableStyle Medium2 -ConditionalText $checkConditionals -PassThru
 
     # -- Repo changes sheet --
     $repoRows = @($Comparison.RepoChanges | Where-Object { $_.DiffStatus -ne 'Matched' })
