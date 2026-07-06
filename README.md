@@ -70,11 +70,15 @@ The detected platform is logged at startup and determines the Graph API version 
 
 Install and configure the following:
 
-1. PowerShell 7+ (recommended)
+1. **Windows PowerShell 5.1** or **PowerShell 7+** (parallel mode requires PowerShell 7+)
 2. Azure CLI
 3. Azure DevOps Azure CLI extension
 4. Access to the target Azure DevOps organization
 5. Optional: ImportExcel PowerShell module (auto-installed by script when XLSX output is requested)
+
+> **PowerShell compatibility note**
+> All scripts are compatible with Windows PowerShell 5.1 and PowerShell 7+.
+> The `-EnableParallel` flag is silently ignored on Windows PowerShell 5.1 — the script falls back to sequential mode automatically and logs a warning.
 
 Minimum Azure DevOps access:
 - Project and repository read access
@@ -144,7 +148,7 @@ Benefits:
 - IncludeUsers (alias: `-Users`): Includes user subjects in addition to groups
 - IncludeGroupMembership (alias: `-Membership`): Resolves members of every group; adds GroupMembership sheet and `group.membership.json`
 - IncludeBranchPolicies (alias: `-Policies`): Collects branch policies per project; adds BranchPolicies sheet and `branch.policies.json`
-- EnableParallel (optional): Enables parallel repository processing (PowerShell 7+)
+- EnableParallel (optional): Enables parallel repository processing (**PowerShell 7+ only** — automatically ignored on Windows PowerShell 5.1)
 - ParallelThrottleLimit (optional): Max parallel workers when parallel mode is enabled (default: 4)
 
 ## Basic Usage
@@ -386,7 +390,7 @@ Potential throttling indicators:
 - Increased response latency over time
 - Retry-like behavior required to complete all projects
 
-If throttling becomes frequent, consider adding retry logic with exponential backoff around az devops invoke calls.
+If throttling becomes frequent, use `-EnableRetry` to activate built-in exponential backoff. Tune with `-RetryMaxAttempts` and `-RetryBaseDelayMs` as needed.
 
 ## Troubleshooting
 
