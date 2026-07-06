@@ -49,6 +49,63 @@ function Invoke-AdoValidation {
         [string]$OrgUrl
     )
 
+    Start-Step -Name 'Validation: Azure CLI installation'
+    if (-not (Get-Command az -CommandType Application -ErrorAction SilentlyContinue)) {
+        Write-Log -Level 'Warn' -Message 'Azure CLI (az) not found in PATH. Attempting automatic installation...'
+
+        # Elevation check — MSI install requires administrator rights.
+        $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole(
+            [Security.Principal.WindowsBuiltInRole]::Administrator)
+        if (-not $isAdmin) {
+            throw ('Azure CLI is not installed and automatic installation requires administrator rights. ' +
+                   'Please run PowerShell as Administrator or install manually from https://aka.ms/installazurecliwindows, ' +
+                   'then restart PowerShell and retry.')
+        }
+
+        $installerPath = Join-Path $env:TEMP 'azure-cli-install.msi'
+        try {
+            Write-Log -Level 'Info' -Message 'Downloading Azure CLI installer from https://aka.ms/installazurecliwindows ...'
+            Invoke-WebRequest -Uri 'https://aka.ms/installazurecliwindows' -OutFile $installerPath -UseBasicParsing
+            Write-Log -Level 'Info' -Message ('Installer downloaded: {0}' -f $installerPath)
+
+            Write-Log -Level 'Info' -Message 'Installing Azure CLI silently (this may take a minute)...'
+            $proc = Start-Process msiexec.exe -ArgumentList ('/i "{0}" /quiet /norestart' -f $installerPath) -Wait -PassThru
+            if ($proc.ExitCode -ne 0) {
+                throw ('MSI installer exited with code {0}.' -f $proc.ExitCode)
+            }
+
+            # Refresh PATH in the current session without restarting PowerShell.
+            $machinePath = [System.Environment]::GetEnvironmentVariable('PATH', 'Machine')
+            $userPath    = [System.Environment]::GetEnvironmentVariable('PATH', 'User')
+            $env:PATH    = (@($machinePath, $userPath) | Where-Object { $_ }) -join ';'
+
+            # Fallback: add default Azure CLI install location if still not found.
+            if (-not (Get-Command az -CommandType Application -ErrorAction SilentlyContinue)) {
+                $azDefault = 'C:\Program Files (x86)\Microsoft SDKs\Azure\CLI2\wbin'
+                if (Test-Path (Join-Path $azDefault 'az.cmd')) {
+                    $env:PATH = $azDefault + ';' + $env:PATH
+                    Write-Log -Level 'Info' -Message ('Added Azure CLI to PATH: {0}' -f $azDefault)
+                }
+            }
+        }
+        catch {
+            throw ('Azure CLI is not installed and automatic installation failed: {0} ' +
+                   'Please install manually from https://aka.ms/installazurecliwindows, ' +
+                   'then restart PowerShell and retry.' -f $_.Exception.Message)
+        }
+        finally {
+            if (Test-Path $installerPath) { Remove-Item $installerPath -Force -ErrorAction SilentlyContinue }
+        }
+
+        if (-not (Get-Command az -CommandType Application -ErrorAction SilentlyContinue)) {
+            throw ('Azure CLI was installed but az is still not available in PATH. ' +
+                   'Please restart PowerShell and retry.')
+        }
+
+        Write-Log -Level 'Info' -Message 'Azure CLI installed successfully.'
+    }
+    Stop-Step -Result 'OK'
+
     Start-Step -Name 'Validation: Azure DevOps CLI extension'
     az extension add --name azure-devops --only-show-errors 1>$null 2>$null
     Stop-Step -Result 'OK'
