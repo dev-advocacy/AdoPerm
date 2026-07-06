@@ -294,6 +294,22 @@ try {
     $sourceSnapshot      = $null
     $destinationSnapshot = $null
 
+    # For Azure DevOps Server (on-premises), load REST HTTP overrides before any
+    # snapshot collection. az devops CLI does not support Server.
+    if ($Mode -ne 'Compare') {
+        $urlsToCheck = @()
+        if (-not [string]::IsNullOrWhiteSpace($SourceOrganizationUrl))      { $urlsToCheck += $SourceOrganizationUrl }
+        if (-not [string]::IsNullOrWhiteSpace($DestinationOrganizationUrl)) { $urlsToCheck += $DestinationOrganizationUrl }
+        foreach ($_url in $urlsToCheck) {
+            $ctx = Resolve-AdoContext -InputOrganizationUrl $_url
+            if ($ctx.PlatformType -eq 'Server') {
+                Write-Log -Level 'Info' -Message ('Server platform detected. Loading REST HTTP mode.')
+                . (Join-Path $scriptDir 'src/ado.http.ps1')
+                break
+            }
+        }
+    }
+
     # ---------- SNAPSHOT PHASE ----------
     if ($Mode -in @('Full', 'Snapshot')) {
         Write-Log -Level 'Info' -Message '--- Source snapshot ---'

@@ -202,6 +202,13 @@ try {
     $Script:AdoPlatform = $resolved.PlatformType
     $Script:AdoGraphApiVersion = if ($Script:AdoPlatform -eq 'Cloud') { '7.1-preview.1' } else { '5.1-preview.1' }
 
+    # For Azure DevOps Server (on-premises), override CLI-based functions with
+    # direct REST API calls. The az devops CLI extension does not support Server.
+    if ($Script:AdoPlatform -eq 'Server') {
+        . (Join-Path $scriptDir 'src/ado.http.ps1')
+        Write-Log -Level 'Info' -Message 'REST HTTP mode loaded for Azure DevOps Server.'
+    }
+
     Initialize-Output -RootFolderName $DesktopFolderName
 
     Write-Log -Level 'Info' -Message ('Platform type: {0}' -f $Script:AdoPlatform)

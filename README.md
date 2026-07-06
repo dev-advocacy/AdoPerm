@@ -71,14 +71,21 @@ The detected platform is logged at startup and determines the Graph API version 
 Install and configure the following:
 
 1. **Windows PowerShell 5.1** or **PowerShell 7+** (parallel mode requires PowerShell 7+)
-2. Azure CLI
-3. Azure DevOps Azure CLI extension
+2. Azure CLI (**Azure DevOps Services / cloud only** — not required for Azure DevOps Server on-premises)
+3. Azure DevOps Azure CLI extension (**cloud only**)
 4. Access to the target Azure DevOps organization
 5. Optional: ImportExcel PowerShell module (auto-installed by script when XLSX output is requested)
 
 > **PowerShell compatibility note**
 > All scripts are compatible with Windows PowerShell 5.1 and PowerShell 7+.
 > The `-EnableParallel` flag is silently ignored on Windows PowerShell 5.1 — the script falls back to sequential mode automatically and logs a warning.
+
+> **Azure DevOps Server (on-premises) note**
+> The `az devops` CLI extension does not support Azure DevOps Server.
+> When the script detects an on-premises URL, it automatically switches to direct REST API calls
+> (see `src/ado.http.ps1`). Azure CLI is **not** required in this mode.
+> Authentication uses the PAT supplied via `-PatSecureString`.
+> Azure CLI is auto-installed only when targeting Azure DevOps Services.
 
 Minimum Azure DevOps access:
 - Project and repository read access
@@ -88,7 +95,7 @@ Minimum Azure DevOps access:
 Authentication options:
 - Interactive login with `az login` (Azure DevOps Services only)
 - Personal Access Token (PAT) passed to the script as a SecureString (`-PatSecureString`)
-- **A PAT is required for Azure DevOps Server (on-premises)** when `az login` is not applicable
+- **A PAT is required for Azure DevOps Server (on-premises)**
 
 ## Files
 
@@ -96,7 +103,8 @@ Authentication options:
 - ado_Migration.ps1: Migration comparison script (snapshot source + destination, diff report)
 - src/ado.logging.ps1: Logging, step timing, cancellation checks
 - src/ado.context.ps1: URL resolution, platform detection, PAT conversion, output initialization
-- src/ado.client.ps1: Azure DevOps CLI calls, validation, project/subject/repo loading
+- src/ado.client.ps1: Azure DevOps CLI calls, validation, project/subject/repo loading (**cloud only**)
+- src/ado.http.ps1: Direct REST API calls for Azure DevOps Server on-premises (**server only**, loaded automatically)
 - src/ado.permissions.ps1: Permission decoding, state mapping, audit-row building
 - src/ado.export.ps1: JSON/XLSX exports — all sheets and JSON files
 - src/ado.audit.ps1: Permission collection loop (sequential/parallel)
@@ -108,6 +116,33 @@ Authentication options:
 - doc/MIGRATION.md: Migration comparison documentation
 - doc/implementation.md: Internal implementation details
 - doc/SECURITY_AUDIT.md: Security audit results
+
+## Platform Architecture
+
+The platform type is detected automatically from the `OrganizationUrl` parameter.
+Based on the result, a different set of API functions is loaded:
+
+```mermaid
+flowchart TD
+    URL([OrganizationUrl])
+    URL --> Detect[Resolve-AdoContext\ndetect platform]
+    Detect --> Cloud{Cloud?}
+    Cloud -- Yes --> CLI[ado.client.ps1\naz devops CLI]
+    Cloud -- No --> HTTP[ado.http.ps1\nREST API direct]
+    CLI --> Audit[Audit / Export]
+    HTTP --> Audit
+```
+
+| URL format | Platform | API transport |
+|---|---|---|
+| `https://dev.azure.com/{org}` | Cloud | `az devops` CLI |
+| `https://{org}.visualstudio.com` | Cloud | `az devops` CLI |
+| `https://{server}/{collection}` | Server | REST HTTP (PAT Basic auth) |
+| `https://{server}/tfs/{collection}` | Server | REST HTTP (PAT Basic auth) |
+
+`ado.http.ps1` overrides the following functions at script scope when Server is detected:
+`Invoke-AdoValidation`, `Get-Projects`, `Get-Subjects`, `Get-Repositories`,
+`Get-PermissionEntry`, `Get-GroupMemberships`, `Get-BranchPolicies`.
 
 ## Naming Convention Recommendation
 
