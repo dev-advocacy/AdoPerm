@@ -166,7 +166,7 @@ function Get-AdoRestPagedResults {
 
     } while (-not [string]::IsNullOrWhiteSpace($continuationToken))
 
-    return @($allItems)
+    return $allItems.ToArray()
 }
 
 # ---------------------------------------------------------------------------
@@ -414,7 +414,7 @@ function Get-GroupMemberships {
         }
     }
 
-    return $rows
+    return $rows.ToArray()
 }
 
 # ---------------------------------------------------------------------------
@@ -465,5 +465,5 @@ function Get-BranchPolicies {
         }
     }
 
-    return $rows
+    return $rows.ToArray()
 }
