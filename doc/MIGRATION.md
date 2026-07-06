@@ -112,9 +112,12 @@ flowchart TD
     DstDir --> DXLSX[ADO_Repo_Permissions.xlsx\nwhen -Out xlsx/both]
 
     DiffXLSX --> XS[Summary]
+    DiffXLSX --> XC[Counts]
+    DiffXLSX --> XMC[MigrationChecks]
     DiffXLSX --> XR[RepoChanges]
     DiffXLSX --> XG[GroupChanges]
     DiffXLSX --> XP[PermissionChanges]
+    DiffXLSX --> XBP[BuildPermissions]
     DiffXLSX --> XMM[MembershipChanges\n-Membership only]
     DiffXLSX --> XPP[PolicyChanges\n-Policies only]
 ```
@@ -139,6 +142,7 @@ classDiagram
     class PermissionRow {
         +string ProjectName
         +string RepositoryName
+        +long? RepositoryFileCount
         +string SubjectPrincipalName
         +long AllowBits
         +long DenyBits
@@ -214,6 +218,28 @@ flowchart LR
 | `Clean` | No removed repos, no removed groups, no removed or changed permissions |
 | `PermissionDrift` | At least one permission was removed or changed |
 | `StructuralChanges` | Repos or groups were removed, but permissions are not degraded |
+
+### MigrationChecks sheet
+
+The XLSX diff export includes a MigrationChecks worksheet with consistency checks grouped by category:
+
+| Category | Example checks |
+|---|---|
+| Structure | Project count, repository count, missing repositories in destination, StructuralMatchPct |
+| Security | PermissionDriftCount, PolicyDriftCount, missing groups in destination |
+| Content | Branch count mismatches, tag count mismatches, repository file count mismatches, default branch mismatches, HEAD commit mismatches |
+
+Status values in MigrationChecks:
+
+| Status | Meaning |
+|---|---|
+| `OK` | Check passed with no detected drift |
+| `Warn` | Drift detected or check could not be fully evaluated due to missing comparable data |
+| `Fail` | Critical drift detected |
+
+Notes:
+- Repository file counts are included in checks when available (implemented for server REST path, best-effort elsewhere).
+- For legacy on-prem environments with limited endpoints, some content checks may report Warn due to unavailable metadata.
 
 ---
 

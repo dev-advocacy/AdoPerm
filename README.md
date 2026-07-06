@@ -14,7 +14,8 @@ The script can:
 - Enumerate branch policies per project with `-Policies`.
 - Flag high-risk permission assignments (always included in output).
 - Export one JSON file per project, plus subjects, risk flags, membership, and policies JSON.
-- Export one Excel workbook with Summary, Subjects, RiskFlags, optional GroupMembership and BranchPolicies, per-project detail, and Legend sheets.
+- Export one Excel workbook with Summary, Totals, Subjects, RiskFlags, optional GroupMembership and BranchPolicies, per-project Matrix and Detail sheets, and Legend.
+- Include per-repository file counts in Matrix sheets when available (always in server REST mode; best-effort in other modes).
 
 ```mermaid
 flowchart LR
@@ -193,6 +194,19 @@ Notes:
 - doc/MIGRATION.md: Migration comparison documentation
 - doc/implementation.md: Internal implementation details
 - doc/SECURITY_AUDIT.md: Security audit results
+
+## Report Highlights
+
+Main XLSX workbook (ADO_Repo_Permissions.xlsx):
+- Summary: project-level counts.
+- Totals: global aggregate counts across all projects.
+- Matrix_<Project>: repository-level metrics, including RepositoryFileCount when available.
+- Detail_<Project>: detailed subject-level permissions per repository.
+- Subjects: aggregated subject-level effective permission coverage.
+- RiskFlags: high-risk permission assignments.
+- GroupMembership (optional): expanded group membership.
+- BranchPolicies (optional): branch policy snapshot.
+- Legend: state mapping reference.
 
 ## Platform Architecture
 
